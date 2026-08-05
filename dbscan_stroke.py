@@ -4,10 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from sklearn.cluster import DBSCAN
 from sklearn.metrics import davies_bouldin_score, silhouette_score
 from sklearn.neighbors import NearestNeighbors
@@ -136,37 +134,8 @@ def run_dbscan(data: pd.DataFrame, config: DBSCANConfig = DBSCANConfig()) -> DBS
     )
 
 
-def save_report_figures(result: DBSCANResult, output_dir: str | Path = "reports") -> Path:
-    """Create report-ready graphic plus CSV tables."""
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    sns.set_theme(style="whitegrid")
-    figure, axes = plt.subplots(2, 2, figsize=(14, 10))
-    axes[0, 0].plot(result.k_distances, color="#356C9B")
-    axes[0, 0].axhline(result.selected_eps, color="#C0392B", linestyle="--", label=f"Selected eps: {result.selected_eps:.3f}")
-    axes[0, 0].set(title="DBSCAN k-distance diagnostics", xlabel="Patients (sorted)", ylabel=f"Distance to {result.min_samples}th neighbour")
-    axes[0, 0].legend()
-    axes[0, 1].scatter(result.projection_2d[:, 0], result.projection_2d[:, 1], c=result.labels, cmap="tab20", s=10, alpha=.65)
-    axes[0, 1].set(title="DBSCAN clusters in PCA projection", xlabel="PC1", ylabel="PC2")
-    axes[1, 0].plot(result.parameter_results["eps"], result.parameter_results["silhouette"], marker="o", color="#356C9B")
-    axes[1, 0].axvline(result.selected_eps, color="#C0392B", linestyle="--")
-    axes[1, 0].set(title="EPS search: silhouette score", xlabel="eps", ylabel="Silhouette (higher is better)")
-    axes[1, 1].bar(result.cluster_summary["cluster"].astype(str), result.cluster_summary["stroke_rate_pct"], color="#B9414B")
-    axes[1, 1].axhline(result.data["stroke"].mean() * 100, color="#333333", linestyle="--", label="Overall stroke rate")
-    axes[1, 1].set(title="Stroke rate by cluster", xlabel="Cluster", ylabel="Stroke rate (%)")
-    axes[1, 1].legend()
-    figure.tight_layout()
-    figure.savefig(output / "dbscan_report.png", dpi=250, bbox_inches="tight")
-    plt.close(figure)
-    result.parameter_results.to_csv(output / "dbscan_parameter_search.csv", index=False)
-    result.cluster_summary.to_csv(output / "dbscan_cluster_summary.csv", index=False)
-    result.data.to_csv(output / "dbscan_patient_clusters.csv", index=False)
-    return output
-
-
 def main() -> None:
     result = run_dbscan(load_stroke_data("brain_stroke.csv"))
-    save_report_figures(result)
     print(f"Selected eps: {result.selected_eps:.4f} (suggested: {result.suggested_eps:.4f})")
     print(f"min_samples: {result.min_samples}; PCA components: {result.n_components}")
     print(f"Clusters: {result.n_clusters}; noise: {result.noise_ratio:.1%}")
