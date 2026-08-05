@@ -201,3 +201,33 @@ def get_pca_loadings(result, selected_pc: str) -> tuple[pd.DataFrame, list[str],
     top_neg_features = loadings.sort_values(by="Weight", ascending=True).head(2)["Feature"].tolist()
     
     return loadings_sorted, top_pos_features, top_neg_features
+
+
+def get_data_quality_report(data: pd.DataFrame) -> pd.DataFrame:
+    """Return a DataFrame summarizing missing values and data types of raw columns."""
+    report = []
+    for col in data.columns:
+        null_count = int(data[col].isnull().sum())
+        total = len(data)
+        null_pct = (null_count / total) * 100
+        
+        # Outlier counts (approximated for numeric features using 1.5 * IQR rule)
+        outlier_count = 0
+        if pd.api.types.is_numeric_dtype(data[col]) and col not in ["stroke", "cluster"]:
+            q1 = data[col].quantile(0.25)
+            q3 = data[col].quantile(0.75)
+            iqr = q3 - q1
+            if iqr > 0:
+                lower = q1 - 1.5 * iqr
+                upper = q3 + 1.5 * iqr
+                outlier_count = int(((data[col] < lower) | (data[col] > upper)).sum())
+                
+        report.append({
+            "Column Name": col,
+            "Data Type": str(data[col].dtype),
+            "Non-Null Count": total - null_count,
+            "Missing Values": null_count,
+            "Missing %": f"{null_pct:.1f}%",
+            "Outliers Check (IQR Outliers)": outlier_count if pd.api.types.is_numeric_dtype(data[col]) and col not in ["stroke", "cluster"] else "N/A"
+        })
+    return pd.DataFrame(report)
