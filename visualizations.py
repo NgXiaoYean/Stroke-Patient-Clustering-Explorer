@@ -175,7 +175,6 @@ def plot_categorical_prevalence(grouped: pd.DataFrame, cat_feature: str, overall
 
 
 def plot_correlation_heatmap(corr_matrix: pd.DataFrame, readable_labels: list[str]) -> go.Figure:
-    # Pearson correlation coefficient matrix heatmap 
     fig_corr = px.imshow(
         corr_matrix,
         x=readable_labels,
@@ -187,9 +186,16 @@ def plot_correlation_heatmap(corr_matrix: pd.DataFrame, readable_labels: list[st
         text_auto=".2f",
         title="Pearson Correlation Strengths"
     )
+    fig_corr.update_xaxes(
+        tickfont=dict(color="#000000", family="sans-serif", size=11)
+    )
+    fig_corr.update_yaxes(
+        tickfont=dict(color="#000000", family="sans-serif", size=11)
+    )
     fig_corr.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)"
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#000000", family="sans-serif")
     )
     return fig_corr
 
@@ -259,3 +265,378 @@ def plot_pca_loadings_bar(loadings: pd.DataFrame, selected_pc: str) -> go.Figure
         yaxis=dict(showgrid=True, gridcolor="#e2e8f0")
     )
     return fig_loadings
+
+
+def plot_target_distribution(data: pd.DataFrame) -> go.Figure:
+    """Bar/frequency chart showing target variable percentages above the bars with Healthy at left."""
+    counts = data["stroke"].value_counts().reset_index()
+    counts.columns = ["Status", "Count"]
+    counts["Status"] = counts["Status"].map({0: "Healthy", 1: "Stroke Patient"})
+    
+    total = counts["Count"].sum()
+    counts["Percentage"] = (counts["Count"] / total * 100).round(2)
+    # Combine count and percentage above the bar
+    counts["Label"] = counts.apply(lambda row: f"{row['Count']:,} ({row['Percentage']:.2f}%)", axis=1)
+    
+    fig = px.bar(
+        counts,
+        x="Status",
+        y="Count",
+        color="Status",
+        text="Label",
+        color_discrete_map={"Healthy": "#356C9B", "Stroke Patient": "#C0392B"},
+        category_orders={"Status": ["Healthy", "Stroke Patient"]},
+        title="Distribution of Target Variable "
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        xaxis_title="Patient Status",
+        yaxis_title="Count",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0")
+    return fig
+
+
+def plot_numerical_outliers(data: pd.DataFrame) -> go.Figure:
+    """Horizontal boxplot facets stacked vertically comparing continuous attributes for outlier inspection."""
+    features = ["age", "avg_glucose_level", "bmi"]
+    melted = data.melt(value_vars=features, var_name="Feature", value_name="Value")
+    melted["Feature"] = melted["Feature"].map({
+        "age": "Age (Years)",
+        "avg_glucose_level": "Average Glucose Level (mg/dL)",
+        "bmi": "Body Mass Index (BMI)"
+    })
+    fig = px.box(
+        melted, 
+        x="Value", 
+        facet_row="Feature", 
+        color="Feature",
+        facet_row_spacing=0.15, 
+        title="<b>Outlier Profiles across Clinical Features</b>",
+        color_discrete_sequence=["#356C9B", "#10B981", "#F59E0B"]
+    )
+    
+    fig.update_traces(
+        width=0.45,
+        marker=dict(size=4.5, opacity=0.7, line=dict(width=0)),
+        line=dict(width=1.5)
+    )
+    
+    fig.update_xaxes(
+        matches=None, 
+        showgrid=True, 
+        gridcolor="#EAF0F6",
+        linecolor="#000000",
+        ticks="outside",
+        tickcolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        showticklabels=True
+    )
+    
+    fig.update_yaxes(showticklabels=False, showgrid=False, title_text="")
+    
+    fig.for_each_annotation(lambda a: a.update(
+        font=dict(size=14, family="sans-serif", color="#000000"),
+        text=f"<b>{a.text.split('=')[-1]}</b>",
+        textangle=0,      
+        x=0,              
+        xanchor="left",
+        yanchor="bottom",
+        y=a.y + 0.13        
+    ))
+    
+    fig.update_layout(
+        height=540,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=40, r=40, t=65, b=40), # balanced margins
+        font=dict(family="sans-serif", color="#000000"), # Force solid black labels globally
+        showlegend=False
+    )
+    return fig
+
+
+def plot_numerical_distributions_grid(data: pd.DataFrame) -> go.Figure:
+    """Generate high-fidelity, interactive Plotly side-by-side histograms with smooth spline KDE line overlays."""
+    from plotly.subplots import make_subplots
+    import scipy.stats as stats
+    
+    features = ["age", "avg_glucose_level", "bmi"]
+    titles = [f"<b>Distribution of {col}</b>" for col in features]
+    
+    # Create subplots grid
+    fig = make_subplots(
+        rows=1, 
+        cols=3, 
+        subplot_titles=titles,
+        horizontal_spacing=0.07
+    )
+    
+    for idx, col in enumerate(features):
+        col_idx = idx + 1
+        values = data[col].dropna()
+        
+        min_val = float(values.min())
+        max_val = float(values.max())
+        x_range = np.linspace(min_val, max_val, 200)
+        
+        # Calculate KDE using scipy
+        kde = stats.gaussian_kde(values)
+        kde_y = kde(x_range)
+        
+        # 24 bins for an elegant binned distribution representation
+        nbins = 24
+        bin_width = (max_val - min_val) / nbins
+        kde_scaled_y = kde_y * len(values) * bin_width
+        
+        # Add histogram trace
+        fig.add_trace(
+            go.Histogram(
+                x=values,
+                xbins=dict(
+                    start=min_val,
+                    end=max_val,
+                    size=bin_width
+                ),
+                name="Frequency",
+                marker=dict(
+                    color="#A2BEED", # professional pastel slate-blue
+                    line=dict(color="#FFFFFF", width=1.5)
+                ),
+                opacity=0.85,
+                hovertemplate="Value Range: %{x}<br>Count: %{y}<extra></extra>",
+                showlegend=False
+            ),
+            row=1, col=col_idx
+        )
+        
+        # Add smooth spline-curved KDE line
+        fig.add_trace(
+            go.Scatter(
+                x=x_range,
+                y=kde_scaled_y,
+                mode="lines",
+                name="Density Trend",
+                line=dict(color="#1A365D", width=3, shape="spline"), # rich dark indigo
+                hovertemplate="Density Level: %{y:.1f}<extra></extra>",
+                showlegend=False
+            ),
+            row=1, col=col_idx
+        )
+        
+        # Style subplot axes
+        fig.update_xaxes(
+            title_text=col, 
+            row=1, col=col_idx, 
+            showgrid=True, 
+            gridcolor="#EAF0F6",
+            linecolor="#CBD5E1",
+            ticks="outside"
+        )
+        fig.update_yaxes(
+            title_text="Count" if idx == 0 else "", 
+            row=1, col=col_idx, 
+            showgrid=True, 
+            gridcolor="#EAF0F6",
+            linecolor="#CBD5E1"
+        )
+        
+    fig.for_each_annotation(lambda a: a.update(
+        font=dict(size=14, family="sans-serif", color="#1E293B"),
+        y=1.05
+    ))
+    
+    fig.update_layout(
+        height=400,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=40, r=40, t=65, b=40),
+        font=dict(family="sans-serif", color="#334155")
+    )
+    return fig
+
+
+def plot_categorical_distributions_grid(data: pd.DataFrame) -> go.Figure:
+    """Generate high-fidelity interactive Plotly subplot grid of categorical distributions."""
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+    
+    features = ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
+    titles = [f"<b>Distribution: {col.replace('_', ' ').title()}</b>" for col in features]
+    
+    fig = make_subplots(
+        rows=3, 
+        cols=2, 
+        subplot_titles=titles,
+        horizontal_spacing=0.18, 
+        vertical_spacing=0.12
+    )
+    
+    # Grid coordinates mapping (r, c)
+    coords = [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1)]
+    
+    for idx, col in enumerate(features):
+        r, c = coords[idx]
+        counts = data[col].value_counts().reset_index()
+        counts.columns = ["Category", "Count"]
+        counts = counts.sort_values(by="Count")
+        
+        total = counts["Count"].sum()
+        counts["Percentage"] = (counts["Count"] / total * 100).round(1)
+        counts["Label"] = counts.apply(lambda row: f"{row['Count']:,} ({row['Percentage']}%)", axis=1)
+        
+        counts["Category"] = counts["Category"].astype(str).str.replace("_", " ").str.title()
+        
+        fig.add_trace(
+            go.Bar(
+                y=counts["Category"],
+                x=counts["Count"],
+                orientation="h",
+                text=counts["Label"],
+                textposition="outside",
+                cliponaxis=False, 
+                textfont=dict(color="#000000", family="sans-serif", size=10, weight="bold"), 
+                marker=dict(
+                    color="#4E79A7", 
+                    line=dict(color="#FFFFFF", width=1)
+                ),
+                hovertemplate="Category: %{y}<br>Count: %{x}<br>Percentage: %{text}<extra></extra>",
+                showlegend=False
+            ),
+            row=r, col=c
+        )
+        
+        # Style grid/axes with solid dark lines and black text
+        fig.update_xaxes(
+            title_text="Count", 
+            row=r, col=c, 
+            showgrid=True, 
+            gridcolor="#EAF0F6", 
+            linecolor="#000000",
+            title_font=dict(color="#000000", family="sans-serif", size=11),
+            tickfont=dict(color="#000000", family="sans-serif", size=10)
+        )
+        fig.update_yaxes(
+            row=r, col=c, 
+            linecolor="#000000",
+            tickfont=dict(color="#000000", family="sans-serif", size=10)
+        )
+        
+    # Style SUBPLOT Titles in black
+    fig.for_each_annotation(lambda a: a.update(
+        font=dict(size=12, family="sans-serif", color="#000000"),
+        y=a.y + 0.02 # nudge titles slightly up
+    ))
+    
+    fig.update_layout(
+        height=850, # taller size to give plenty of vertical breathing room
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=80, r=80, t=50, b=50), # generous margins
+        font=dict(family="sans-serif", color="#000000") # Force solid black globally
+    )
+    return fig
+
+
+def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_cols: list[str], feature: str) -> go.Figure:
+    """Generate a side-by-side Plotly comparison of a feature before and after scaling."""
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+    
+    # Fetch raw and scaled series
+    raw_series = raw_data[feature].dropna()
+    
+    prep_col = f"numeric__{feature}"
+    prep_df = pd.DataFrame(prep_data, columns=prep_cols)
+    if prep_col in prep_df.columns:
+        scaled_series = prep_df[prep_col]
+    else:
+        matching = [c for c in prep_df.columns if feature in c]
+        scaled_series = prep_df[matching[0]] if matching else pd.Series()
+        
+    feature_title = {
+        "age": "Age (Years)",
+        "avg_glucose_level": "Average Glucose Level (mg/dL)",
+        "bmi": "Body Mass Index (BMI)"
+    }[feature]
+    
+    # Create 1 row, 2 cols subplot
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=[
+            f"<b>Before Scaling: Raw {feature_title}</b>",
+            f"<b>After Scaling: Robust Scaled {feature_title}</b>"
+        ],
+        horizontal_spacing=0.15
+    )
+    
+    # Left plot: Raw Distribution
+    fig.add_trace(
+        go.Histogram(
+            x=raw_series,
+            marker_color="#356C9B",
+            opacity=0.8,
+            name="Raw Value",
+            showlegend=False
+        ),
+        row=1, col=1
+    )
+    
+    # Right plot: Scaled Distribution
+    fig.add_trace(
+        go.Histogram(
+            x=scaled_series,
+            marker_color="#F59E0B",
+            opacity=0.8,
+            name="Scaled Value (Robust)",
+            showlegend=False
+        ),
+        row=1, col=2
+    )
+    
+    # Style X & Y Axes in solid black
+    fig.update_xaxes(
+        title_text="Raw Value (Original Unit)", 
+        row=1, col=1, 
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=10),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
+    fig.update_xaxes(
+        title_text="Scaled Value (Deviation from Median/IQR)", 
+        row=1, col=2, 
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=10),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
+    
+    fig.update_yaxes(
+        title_text="Frequency (Count)",
+        row=1, col=1,
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=10),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
+    fig.update_yaxes(
+        row=1, col=2,
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=10)
+    )
+    
+    # Style annotations / titles in black
+    fig.for_each_annotation(lambda a: a.update(
+        font=dict(size=12, family="sans-serif", color="#000000")
+    ))
+    
+    fig.update_layout(
+        height=340,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=60, r=40, t=55, b=45),
+        font=dict(family="sans-serif", color="#000000")
+    )
+    return fig
+

@@ -20,7 +20,8 @@ from data_processing import (
     get_correlation_matrix,
     get_preprocessing_previews,
     get_pca_scree_data,
-    get_pca_loadings
+    get_pca_loadings,
+    get_data_quality_report
 )
 from visualizations import (
     plot_cluster_scatter,
@@ -31,7 +32,12 @@ from visualizations import (
     plot_categorical_prevalence,
     plot_correlation_heatmap,
     plot_pca_scree,
-    plot_pca_loadings_bar
+    plot_pca_loadings_bar,
+    plot_target_distribution,
+    plot_numerical_outliers,
+    plot_numerical_distributions_grid,
+    plot_categorical_distributions_grid,
+    plot_scaling_comparison
 )
 
 DATA_PATH = Path(__file__).with_name("brain_stroke.csv")
@@ -224,71 +230,202 @@ def show_dbscan_clustering(result) -> None:
 
 
 def show_eda(data: pd.DataFrame) -> None:
-    st.header("📊 Exploratory Data Analysis (EDA)")
-    st.markdown("Inspect raw variables distributions, risk relationships, and correlations to include in your reports.")
+    st.header("📊 Description and Analysis of Dataset")
     
-    # 1. Summary Statistics Cards
-    st.subheader("Clinical Summary Stats")
     summary = get_clinical_summary(data)
-    col1, col2, col3, col4, col5 = st.columns(5)
     
-    col1.metric("Total Cohort Patients", f"{summary['total_patients']:,}")
-    col2.metric("Stroke Patients", f"{summary['stroke_cases']:,}")
-    col3.metric("Stroke Prevalence", f"{summary['stroke_prevalence']:.2f}%")
-    col4.metric("Average Cohort Age", f"{summary['average_age']:.1f} yrs")
-    col5.metric("Average Cohort BMI", f"{summary['average_bmi']:.1f}")
+    # Dataset Shape
+    st.subheader("Dataset Shape")
+    st.text(f"Dataset shape: {data.shape[0]} rows, {data.shape[1]} columns")
     
-    # 2. Continuous Variables Distributions
-    st.subheader("Patient Clinical Metric Overlays")
+    # Dataset Structure
+    st.subheader("Dataset Structure")
+    quality_df = get_data_quality_report(data)
+    structure_report = quality_df[["Column Name", "Data Type", "Non-Null Count"]]
+    st.dataframe(structure_report, use_container_width=True, hide_index=True)
+    
+    # Check Missing Values
+    st.subheader("Check Missing Values")
+    missing_report = quality_df[["Column Name", "Non-Null Count", "Missing Values"]]
+    st.dataframe(missing_report, use_container_width=True, hide_index=True)
+    
+    # Distribution of Target Variable
+    st.subheader("Distribution of Target Variable (`stroke`)")
+    fig_target = plot_target_distribution(data)
+    st.plotly_chart(fig_target, use_container_width=True)
+        
+    # Distribution of Numerical Attributes
+    st.subheader("Distribution of Numerical Attributes")
+    fig_grid = plot_numerical_distributions_grid(data)
+    st.plotly_chart(fig_grid, use_container_width=True)
+    
+    st.subheader("Outcome-Based Distribution Comparison")
     num_feature = st.selectbox(
-        "Select Clinical Metric for Distribution", 
+        "Select Numerical Feature to View Density", 
         ["age", "avg_glucose_level", "bmi"], 
         format_func=lambda x: {"age": "Age (Years)", "avg_glucose_level": "Average Glucose Level (mg/dL)", "bmi": "Body Mass Index (BMI)"}[x]
     )
-    
     fig_dist = plot_continuous_distribution(data, num_feature)
     st.plotly_chart(fig_dist, use_container_width=True)
     
-    # 3. Categorical Risk Factors
-    st.subheader("Category Feature Stroke Rates")
-    cat_feature = st.selectbox(
-        "Select Cohort Dimension to Compare", 
-        ["hypertension", "heart_disease", "gender", "ever_married", "work_type", "Residence_type", "smoking_status"],
-        format_func=lambda x: x.replace("_", " ").title()
+    # Distribution of Categorical Attributes
+    st.subheader("Distribution of Categorical Attributes")
+    fig_cat_grid = plot_categorical_distributions_grid(data)
+    st.plotly_chart(fig_cat_grid, use_container_width=True)
+        
+    # Outlier Detection
+    st.subheader("Outlier Detection")
+    fig_outliers = plot_numerical_outliers(data)
+    st.plotly_chart(fig_outliers, use_container_width=True)
+    
+    outlier_rows = []
+    for col in ["age", "avg_glucose_level", "bmi"]:
+        col_name_readable = {
+            "age": "Age",
+            "avg_glucose_level": "Average Glucose Level",
+            "bmi": "BMI"
+        }[col]
+        values = data[col].dropna()
+        q1 = float(values.quantile(0.25))
+        q3 = float(values.quantile(0.75))
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        num_outliers = int(((values < lower_bound) | (values > upper_bound)).sum())
+        pct_outliers = float((num_outliers / len(data)) * 100)
+        
+        outlier_rows.append({
+            "Attribute": col_name_readable,
+            "First Quartile": q1,
+            "Third Quartile": q3,
+            "Lower Boundary": lower_bound,
+            "Upper Boundary": upper_bound,
+            "Number of Outliers": num_outliers,
+            "Percentage of outliers": pct_outliers
+        })
+    outlier_df = pd.DataFrame(outlier_rows)
+    
+    st.write("#### Outlier Summary Table")
+    st.dataframe(
+        outlier_df.style.format({
+            "First Quartile": "{:.2f}",
+            "Third Quartile": "{:.2f}",
+            "Lower Boundary": "{:.2f}",
+            "Upper Boundary": "{:.2f}",
+            "Percentage of outliers": "{:.2f}"
+        }),
+        use_container_width=True,
+        hide_index=True
     )
     
-    overall_stroke_rate = summary["stroke_prevalence"]
-    grouped = get_categorical_analysis(data, cat_feature)
-    fig_cat = plot_categorical_prevalence(grouped, cat_feature, overall_stroke_rate)
-    
-    left, right = st.columns([2, 1])
-    with left:
-        st.plotly_chart(fig_cat, use_container_width=True)
-    with right:
-        st.write("#### Clinical Rates Breakdown")
-        table_df = grouped.copy()
-        table_df.columns = [cat_feature.replace('_', ' ').title(), "Total patients", "Stroke cases", "Stroke Rate (%)"]
-        table_df["Stroke Rate (%)"] = table_df["Stroke Rate (%)"].map("{:.2f}%".format)
-        st.dataframe(table_df, use_container_width=True, hide_index=True)
-        
-    # 4. Correlation Heatmap
-    st.subheader("Demographic & Clinical Correlation Heatmap")
+    # Correlation among numeric and binary attributes
+    st.subheader("Correlation among Numeric and Binary Attributes")
     corr_matrix, readable_labels = get_correlation_matrix(data)
     fig_corr = plot_correlation_heatmap(corr_matrix, readable_labels)
     st.plotly_chart(fig_corr, use_container_width=True)
+    
+    st.info("""
+        💡 **Data Pipeline Execution Note**:
+        * **Robustness**: Any extreme outliers identified in **3.2.7** are treated during preprocessing using robust scaling techniques (`RobustScaler` median/IQR) rather than being dropped, which keeps all clinical cohorts intact.
+        * **Missing Values**: Imputed automatically to prevent clustering algorithm disruption.
+    """)
 
 
 def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> None:
-    st.header("⚙️ Data Preprocessing & Principal Component Analysis (PCA)")
-    st.markdown("Inspect transformations, scaling steps, and eigenvectors mapping to continuous principal dimensions.")
+    st.header("⚙️ Data Preprocessing")
     
-    st.subheader("Data Cleaning & Preprocessing Pipeline")
-    st.markdown("""
-        To prepare the medical clinical details for distance-based clustering (like DBSCAN), the pipeline executes:
-        1. **Robust Scaling**: Applied to continuous metrics (`Age`, `BMI`, `Average Glucose Level`) using median and IQR to handle outliers.
-        2. **Standard Scaling**: Applied to binary risk features (`Hypertension`, `Heart Disease`).
-        3. **One-Hot Encoding**: Applied to non-ordinal categorical values (like `Smoking Status`, `Work Type`, etc.).
-    """)
+    # Table 1: Feature Scaling Analysis
+    st.subheader("Feature Scaling Analysis (Before vs. After)")
+    raw_stats = []
+    prep_df = pd.DataFrame(result.preprocessed_data, columns=result.preprocessed_feature_names)
+    
+    # Continuous Features
+    for col in ["age", "avg_glucose_level", "bmi"]:
+        raw_vals = data[col].dropna()
+        prep_col = f"numeric__{col}"
+        if prep_col in prep_df.columns:
+            scaled_vals = prep_df[prep_col]
+        else:
+            matching_cols = [c for c in prep_df.columns if col in c]
+            scaled_vals = prep_df[matching_cols[0]] if matching_cols else pd.Series()
+            
+        col_readable = {
+            "age": "Age (Years)",
+            "avg_glucose_level": "Average Glucose Level (mg/dL)",
+            "bmi": "Body Mass Index (BMI)"
+        }[col]
+        
+        raw_stats.append({
+            "Column Name": col_readable,
+            "Data Type": "Numeric (Continuous)",
+            "Scaling Method": "Robust Scaling (Median/IQR)",
+            "Before (Mean ± SD)": f"{raw_vals.mean():.2f} ± {raw_vals.std():.2f}",
+            "Before (Min / Max)": f"{raw_vals.min():.2f} / {raw_vals.max():.2f}",
+            "After (Mean ± SD)": f"{scaled_vals.mean():.2f} ± {scaled_vals.std():.2f}",
+            "After (Min / Max)": f"{scaled_vals.min():.2f} / {scaled_vals.max():.2f}"
+        })
+        
+    # Binary Features
+    for col in ["hypertension", "heart_disease"]:
+        raw_vals = data[col].dropna()
+        prep_col = f"binary__{col}"
+        if prep_col in prep_df.columns:
+            scaled_vals = prep_df[prep_col]
+        else:
+            matching_cols = [c for c in prep_df.columns if col in c]
+            scaled_vals = prep_df[matching_cols[0]] if matching_cols else pd.Series()
+            
+        col_readable = col.replace('_', ' ').title()
+        
+        raw_stats.append({
+            "Column Name": col_readable,
+            "Data Type": "Binary (Indicator)",
+            "Scaling Method": "Standard Scaling (Mean/SD)",
+            "Before (Mean ± SD)": f"{raw_vals.mean():.2f} ± {raw_vals.std():.2f}",
+            "Before (Min / Max)": f"{raw_vals.min():.2f} / {raw_vals.max():.2f}",
+            "After (Mean ± SD)": f"{scaled_vals.mean():.2f} ± {scaled_vals.std():.2f}",
+            "After (Min / Max)": f"{scaled_vals.min():.2f} / {scaled_vals.max():.2f}"
+        })
+        
+    scaling_comparison_df = pd.DataFrame(raw_stats)
+    st.dataframe(scaling_comparison_df, use_container_width=True, hide_index=True)
+    st.write("")
+    
+    # Table 2: Categorical Feature Encoding
+    st.subheader("Categorical Feature Encoding (One-Hot Encoding)")
+    cat_stats = []
+    for col in ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]:
+        raw_classes = sorted(data[col].dropna().unique().tolist())
+        raw_classes_cleaned = [c.replace("_", " ").title() for c in raw_classes]
+        
+        # Match generated columns in clean feature list
+        generated_cols = [c for c in prep_df.columns if c.startswith(f"{col}_") or c == col]
+        generated_cols_cleaned = [c.replace(f"{col}_", "") for c in generated_cols]
+        
+        col_readable = col.replace('_', ' ').title()
+        
+        cat_stats.append({
+            "Column Name": col_readable,
+            "Data Type": "Categorical",
+            "Encoding Method": "One-Hot Encoding",
+            "Unique Classes (Before)": ", ".join(raw_classes_cleaned),
+            "Generated Encoded Columns (After)": ", ".join(generated_cols_cleaned)
+        })
+        
+    encoding_df = pd.DataFrame(cat_stats)
+    st.dataframe(encoding_df, use_container_width=True, hide_index=True)
+    
+    st.write("#### Visualizing Scaling Effect (Distribution Comparison)")
+    st.markdown("Select a feature to see how scaling centers the data at 0 and normalizes its range:")
+    selected_scale_feature = st.selectbox(
+        "Select Continuous Feature to inspect Preprocessing scaling effect:",
+        ["age", "avg_glucose_level", "bmi"],
+        format_func=lambda x: {"age": "Age (Years)", "avg_glucose_level": "Average Glucose Level (mg/dL)", "bmi": "Body Mass Index (BMI)"}[x]
+    )
+    fig_scale_comp = plot_scaling_comparison(data, result.preprocessed_data, result.preprocessed_feature_names, selected_scale_feature)
+    st.plotly_chart(fig_scale_comp, use_container_width=True)
+    st.write("")
     
     raw_preview, prep_preview = get_preprocessing_previews(result, data)
     left_c, right_c = st.columns(2)
@@ -366,7 +503,7 @@ def main() -> None:
             st.dataframe(result.data.head(), use_container_width=True)
             
     with tab_eda:
-        show_eda(result.data)
+        show_eda(data)
         
     with tab_preprocessing:
         show_preprocessing_pca(result, result.data, pca_variance)
