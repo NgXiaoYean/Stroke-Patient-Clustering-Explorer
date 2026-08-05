@@ -1,43 +1,50 @@
-# Stroke Patient Clustering Explorer (Streamlit)
+﻿# Stroke Patient Clustering Explorer
 
-Interactive app for your assignment goal: *discover groups of patients with
-similar lifestyle/clinical characteristics, then analyze how stroke cases are
-distributed among those groups.*
+Interactive Streamlit application for discovering patient profiles with DBSCAN,
+then comparing their stroke rates. The `stroke` column is **not** used to build
+clusters: it remains an outcome for interpreting the profiles afterwards.
 
-## Run it locally
+## Run
 
-1. Put `app.py` and `brain_stroke.csv` in the same folder.
-2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-3. Launch:
-   ```
-   streamlit run app.py
-   ```
-4. It opens in your browser at http://localhost:8501
+```powershell
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-## What it does
+The app opens with DBSCAN ready to use. K-Means and MeanShift already have
+navigation placeholders, so teammates can connect their modules without
+rebuilding the UI.
 
-- **Sidebar**: pick the algorithm (DBSCAN / K-Means / MeanShift), tune its
-  parameters live (eps, min_samples, k, bandwidth), adjust how much PCA
-  variance to keep, and set the "elevated risk" threshold. Everything below
-  recalculates instantly (results are cached so it stays fast).
-- **📊 Data Overview**: dataset preview, stroke class balance, feature
-  distributions, PCA variance curve.
-- **🧩 Clusters**: 2D PCA scatter of the clusters (color by cluster or by
-  stroke status), cluster size chart, and — for DBSCAN — the k-distance
-  elbow graph so you can see exactly where your `eps` sits.
-- **❤️ Stroke Risk by Cluster**: stroke rate per cluster vs. the overall
-  rate, auto-flags "elevated-risk" clusters, plus the full crosstab.
-- **🧬 Cluster Profiles**: mean age/glucose/BMI/etc. per cluster, a radar
-  chart comparing clusters, and each cluster's most common work type /
-  smoking status.
-- **🧑‍⚕️ Try a Patient**: enter a hypothetical patient's details and the
-  app runs them through the same preprocessing pipeline, finds their nearest
-  cluster, and shows whether that cluster is elevated-risk — a nice live
-  demo for your presentation.
+## DBSCAN settings
 
-Preprocessing mirrors your notebook: `RobustScaler` for outlier-prone
-numeric features, `StandardScaler` for the binary flags, `OneHotEncoder`
-for categoricals, then PCA before clustering.
+| Setting | What it changes | Typical effect |
+| --- | --- | --- |
+| `eps` | Neighbourhood radius | Lower EPS makes tight/smaller groups and more noise; higher EPS merges nearby groups. Too high can put most patients in one cluster. |
+| `min_samples` | Neighbours required to be a dense core | Higher values make DBSCAN stricter, usually producing more noise and fewer/tighter clusters. |
+| PCA variance | Information kept before distance clustering | Higher values retain more detail but make distances less dense; use a stable value such as 0.85–0.95. |
+| Elevated-risk multiplier | Interpretation only | Flags a cluster when its stroke rate exceeds the overall rate by this multiplier. It does not alter clustering. |
+
+Use automatic EPS first. It uses the 90th percentile of the k-distance curve
+and scores nearby values, avoiding the old approach of using the final largest
+jump, which is often caused by isolated outliers. Compare candidates using:
+
+- higher silhouette score (better separation),
+- lower Davies–Bouldin index (better separation),
+- a noise percentage that is understandable for the project, and
+- clusters large enough to describe meaningfully.
+
+There is no universally “best” high or low number of clusters. More than two
+clusters is completely valid even though `stroke` has only `0` and `1`: clusters
+represent different patient profiles, while stroke is a separate outcome. The
+`-1` label means a patient is noise/unassigned, not a third stroke category.
+
+## Report files
+
+Run the DBSCAN module directly to create reusable report artefacts:
+
+```powershell
+python dbscan_stroke.py
+```
+
+It creates `reports/dbscan_report.png`, the EPS search table, a cluster summary,
+and patient-level cluster labels.
