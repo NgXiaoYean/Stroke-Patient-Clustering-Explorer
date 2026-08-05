@@ -41,6 +41,7 @@ from visualizations import (
     plot_encoding_comparison,
     plot_pca_loadings_heatmap
 )
+from evaluation import generate_algorithm_comparison, calculate_feature_contributions
 
 DATA_PATH = Path(__file__).with_name("brain_stroke.csv")
 
@@ -194,11 +195,51 @@ def inject_custom_css() -> None:
 def show_dbscan_clustering(result) -> None:
     st.header("🔍 DBSCAN Clustering")
 
-    first, second, third, fourth = st.columns(4)
-    first.metric("Clusters found", result.n_clusters)
-    second.metric("Noise patients", f"{result.noise_ratio:.1%}")
-    third.metric("Selected EPS", f"{result.selected_eps:.3f}", help=f"Robust suggestion: {result.suggested_eps:.3f}")
-    fourth.metric("Silhouette", "N/A" if np.isnan(result.silhouette) else f"{result.silhouette:.3f}", help="Higher is better; compare settings only on the same data.")
+    # Calculate supplemental metrics for comparison and render in a custom HTML flexbox stats bar
+    clean_df = result.data[result.data["cluster"] != -1]
+    stroke_rates = clean_df.groupby("cluster")["stroke"].mean()
+    max_stroke_rate = stroke_rates.max() if not stroke_rates.empty else 0.0
+    baseline_stroke_rate = result.data["stroke"].mean()
+
+    st.markdown(f"""
+    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">
+        <!-- Card 1 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Clusters Found</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{result.n_clusters}</div>
+        </div>
+        <!-- Card 2 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Noise Patients</div>
+            <div style="font-size: 1.15rem; color: #C0392B; font-weight: 700; margin-top: 3px;">{result.noise_ratio:.2%}</div>
+        </div>
+        <!-- Card 3 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Selected EPS</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{result.selected_eps:.3f}</div>
+        </div>
+        <!-- Card 4 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Silhouette Score</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{"N/A" if np.isnan(result.silhouette) else f"{result.silhouette:.4f}"}</div>
+        </div>
+        <!-- Card 5 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Davies-Bouldin</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{"N/A" if np.isnan(result.davies_bouldin) else f"{result.davies_bouldin:.4f}"}</div>
+        </div>
+        <!-- Card 6 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Max stroke rate</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{max_stroke_rate:.2%}</div>
+        </div>
+        <!-- Card 7 -->
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Baseline stroke</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{baseline_stroke_rate:.2%}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if result.n_clusters < 2:
         st.warning("This setting found fewer than two clusters. Try lowering `min_samples` or EPS, or return to automatic EPS.")
@@ -522,8 +563,9 @@ def main() -> None:
         
     result = analyse_dbscan(data, eps, min_samples, pca_variance, risk_multiplier)
     
-    tab_clustering, tab_eda, tab_preprocessing = st.tabs([
+    tab_clustering, tab_comparison, tab_eda, tab_preprocessing = st.tabs([
         "🔍 Clustering Dashboard", 
+        "⚔️ Algorithm Comparison",
         "📊 Exploratory Data Analysis (EDA)", 
         "⚙️ Data Preprocessing & PCA"
     ])
@@ -531,10 +573,61 @@ def main() -> None:
     with tab_clustering:
         if selected == "DBSCAN":
             show_dbscan_clustering(result)
-        else:
-            st.title(f"{selected} Clustering Workspace")
-            st.info(f"The shared UI is ready. Add your teammate's `{selected.lower().replace('-', '')}_stroke.py` adapter here using the same result interface as `dbscan_stroke.run_dbscan`.")
-            st.dataframe(result.data.head(), use_container_width=True)
+            
+            # Display Feature Contribution Insights
+            pca_importance, cluster_deviations = calculate_feature_contributions(result)
+            with st.expander("📊 Attribute Contribution Analysis"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write("##### Overall Feature Importance (PCA Weight)")
+                    st.dataframe(pca_importance, use_container_width=True, hide_index=True)
+                with c2:
+                    st.write("##### Cluster Mean Deviation from Baseline (%)")
+                    st.dataframe(cluster_deviations, use_container_width=True)
+
+        # if selected == "K-Means":
+        #     # 
+        #     # 
+        #     pca_imp, cluster_dev = calculate_feature_contributions(kmeans_result)
+        #     with st.expander("📊 Attribute Contribution Analysis (K-Means)"):
+        #         c1, c2 = st.columns(2)
+        #         with c1:
+        #             st.dataframe(pca_imp, use_container_width=True, hide_index=True)
+        #         with c2:
+        #             st.dataframe(cluster_dev, use_container_width=True)
+
+        # if selected == "MeanShift":
+        #     # 
+        #     # 
+        #     pca_imp, cluster_dev = calculate_feature_contributions(meanshift_result)
+        #     with st.expander("📊 Attribute Contribution Analysis (MeanShift)"):
+        #         c1, c2 = st.columns(2)
+        #         with c1:
+        #             st.dataframe(pca_imp, use_container_width=True, hide_index=True)
+        #         with c2:
+        #             st.dataframe(cluster_dev, use_container_width=True)
+
+            
+    with tab_comparison:
+        st.header("⚔️ Clustering Algorithm Comparison")
+        st.markdown("Compare performance indices and clinical outcomes across medical patient clustering algorithms:")
+        
+        # Currently we register the active DBSCAN result. As K-Means / MeanShift adapters are added, include their runs in this dictionary.
+        results_dict = {
+            "DBSCAN": result
+        }
+        
+        comp_df = generate_algorithm_comparison(results_dict)
+        # Transpose so columns represent algorithms and first column contains metric labels
+        comp_transposed = comp_df.set_index("Algorithm").T.reset_index()
+        comp_transposed.columns = ["Comparison Metric"] + list(comp_df["Algorithm"])
+        st.dataframe(comp_transposed, use_container_width=True, hide_index=True)
+        
+        st.info("""
+            📝 **Teammate Integration Guide**:
+            * To compare K-Means or MeanShift runs, instantiate their results via your teammate's adapters (using the same `ClusteringResult` interface) and append them to the `results_dict` inside `app.py`.
+            * The comparison table will automatically calculate and display the new models' clusters count, noise rates, silhouette ratios, and maximum group stroke rates side-by-side.
+        """)
             
     with tab_eda:
         show_eda(data)
