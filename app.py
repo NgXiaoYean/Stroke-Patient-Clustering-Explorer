@@ -37,7 +37,9 @@ from visualizations import (
     plot_numerical_outliers,
     plot_numerical_distributions_grid,
     plot_categorical_distributions_grid,
-    plot_scaling_comparison
+    plot_scaling_comparison,
+    plot_encoding_comparison,
+    plot_pca_loadings_heatmap
 )
 
 DATA_PATH = Path(__file__).with_name("brain_stroke.csv")
@@ -190,8 +192,7 @@ def inject_custom_css() -> None:
 
 
 def show_dbscan_clustering(result) -> None:
-    st.header("🔍 DBSCAN Clustering Analysis")
-    st.caption("Clusters are formed without using the stroke label; stroke rates are shown afterwards for interpretation.")
+    st.header("🔍 DBSCAN Clustering")
 
     first, second, third, fourth = st.columns(4)
     first.metric("Clusters found", result.n_clusters)
@@ -225,7 +226,45 @@ def show_dbscan_clustering(result) -> None:
     st.plotly_chart(chart, use_container_width=True)
     
     rates = result.cluster_summary.copy()
-    st.dataframe(rates, use_container_width=True, hide_index=True)
+    
+    # Map elevated_risk boolean to Yes/No
+    rates["elevated_risk"] = rates["elevated_risk"].map({True: "Yes", False: "No"})
+    
+    # Assign the raw stroke_rate fraction ratio to age_mean
+    rates["age_mean"] = rates["stroke_rate"]
+    
+    # String format all numbers before transposing for clean layout alignment
+    rates["cluster"] = rates["cluster"].astype(int)
+    rates["patients"] = rates["patients"].astype(int)
+    rates["stroke_cases"] = rates["stroke_cases"].astype(int)
+    rates["age_mean"] = rates["age_mean"].apply(lambda x: f"{x:.4f}" if pd.notnull(x) else "")
+    rates["glucose_mean"] = rates["glucose_mean"].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+    rates["bmi_mean"] = rates["bmi_mean"].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+    rates["stroke_rate_pct"] = rates["stroke_rate_pct"].apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "")
+    
+    # Rename columns to match user structure
+    rates = rates.rename(columns={
+        "cluster": "Cluster",
+        "patients": "Patients",
+        "stroke_cases": "stroke_cases",
+        "age_mean": "age_mean",
+        "glucose_mean": "glucose_mean",
+        "bmi_mean": "Bmi_mean",
+        "stroke_rate_pct": "stroke_rate_pct",
+        "elevated_risk": "elevated_risk"
+    })
+    
+    # Select and order columns
+    rates_display = rates[[
+        "Cluster", "Patients", "stroke_cases", "age_mean", 
+        "glucose_mean", "Bmi_mean", "stroke_rate_pct", "elevated_risk"
+    ]]
+    
+    # Transpose the dataframe by setting Cluster as the index first, avoiding any duplicate "Cluster" row in the table body
+    transposed = rates_display.set_index("Cluster").T.reset_index()
+    transposed.columns = ["Attribute"] + [f"Cluster {int(c)}" for c in rates_display["Cluster"]]
+    
+    st.dataframe(transposed, use_container_width=True, hide_index=True)
     st.download_button("Download clustered patient data", result.data.to_csv(index=False).encode("utf-8"), "dbscan_patient_clusters.csv", "text/csv")
 
 
@@ -390,10 +429,20 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
         
     scaling_comparison_df = pd.DataFrame(raw_stats)
     st.dataframe(scaling_comparison_df, use_container_width=True, hide_index=True)
+    
+    st.write("#### Visualizing Scaling Effect (Distribution Comparison)")
+    st.markdown("Select a feature to see how scaling centers the data at 0 and normalizes its range:")
+    selected_scale_feature = st.selectbox(
+        "Select Continuous Feature to inspect Preprocessing scaling effect:",
+        ["age", "avg_glucose_level", "bmi"],
+        format_func=lambda x: {"age": "Age (Years)", "avg_glucose_level": "Average Glucose Level (mg/dL)", "bmi": "Body Mass Index (BMI)"}[x]
+    )
+    fig_scale_comp = plot_scaling_comparison(data, result.preprocessed_data, result.preprocessed_feature_names, selected_scale_feature)
+    st.plotly_chart(fig_scale_comp, use_container_width=True)
     st.write("")
     
     # Table 2: Categorical Feature Encoding
-    st.subheader("Categorical Feature Encoding (One-Hot Encoding)")
+    st.subheader("Categorical Feature Encoding")
     cat_stats = []
     for col in ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]:
         raw_classes = sorted(data[col].dropna().unique().tolist())
@@ -401,7 +450,7 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
         
         # Match generated columns in clean feature list
         generated_cols = [c for c in prep_df.columns if c.startswith(f"{col}_") or c == col]
-        generated_cols_cleaned = [c.replace(f"{col}_", "") for c in generated_cols]
+        generated_cols_cleaned = generated_cols
         
         col_readable = col.replace('_', ' ').title()
         
@@ -416,28 +465,18 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
     encoding_df = pd.DataFrame(cat_stats)
     st.dataframe(encoding_df, use_container_width=True, hide_index=True)
     
-    st.write("#### Visualizing Scaling Effect (Distribution Comparison)")
-    st.markdown("Select a feature to see how scaling centers the data at 0 and normalizes its range:")
-    selected_scale_feature = st.selectbox(
-        "Select Continuous Feature to inspect Preprocessing scaling effect:",
-        ["age", "avg_glucose_level", "bmi"],
-        format_func=lambda x: {"age": "Age (Years)", "avg_glucose_level": "Average Glucose Level (mg/dL)", "bmi": "Body Mass Index (BMI)"}[x]
+    st.write("#### Visualizing One-Hot Encoding Effect (Binary Matrix Grid)")
+    st.markdown("Select a categorical feature to see how patient categories map to model column bits:")
+    selected_encode_feature = st.selectbox(
+        "Select Categorical Feature to inspect encoding map:",
+        ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"],
+        format_func=lambda x: x.replace('_', ' ').title()
     )
-    fig_scale_comp = plot_scaling_comparison(data, result.preprocessed_data, result.preprocessed_feature_names, selected_scale_feature)
-    st.plotly_chart(fig_scale_comp, use_container_width=True)
+    fig_encode_comp = plot_encoding_comparison(data, result.preprocessed_data, result.preprocessed_feature_names, selected_encode_feature)
+    st.plotly_chart(fig_encode_comp, use_container_width=True)
     st.write("")
     
-    raw_preview, prep_preview = get_preprocessing_previews(result, data)
-    left_c, right_c = st.columns(2)
-    with left_c:
-        st.write("#### Original Features (Preview Raw Input)")
-        st.dataframe(raw_preview, use_container_width=True)
-        
-    with right_c:
-        st.write("#### Preprocessed Numerical representation (Preview Pipeline Output)")
-        st.dataframe(prep_preview, use_container_width=True)
-        st.caption("Showing first 7 column indexes of the scale-standardized feature matrix.")
-        
+
     # PCA Scree Plot
     st.subheader("PCA Explained Variance & Components Retention")
     st.markdown("PCA project features onto orthogonal components. Let's see how much variance is explained by each component.")
@@ -448,21 +487,16 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
     
     # PCA feature loadings/interpretations
     st.subheader("Interpret Principal Dimensions via Feature Weights")
-    st.markdown("Analyze how much weight each raw medical feature has on the primary computed PC components.")
+    st.markdown("Analyze how much weight each raw medical feature has on all computed PC components at once:")
     
-    pc_list = [f"PC{i+1}" for i in range(result.n_components)]
-    selected_pc = st.selectbox("Select Principal Component to Inspect", pc_list)
+    fig_loadings_heatmap = plot_pca_loadings_heatmap(result.pca_selected_loadings)
+    st.plotly_chart(fig_loadings_heatmap, use_container_width=True)
     
-    loadings, top_pos_features, top_neg_features = get_pca_loadings(result, selected_pc)
-    fig_loadings = plot_pca_loadings_bar(loadings, selected_pc)
-    st.plotly_chart(fig_loadings, use_container_width=True)
-    
-    # Interpretations text
-    st.info(f"""
-        💡 **Clinical Interpretation for {selected_pc}**:
-        * **Strong Positive Associations**: Features like `{', '.join(top_pos_features)}` increase index scores on `{selected_pc}`.
-        * **Strong Negative Associations**: Features like `{', '.join(top_neg_features)}` decrease index scores on `{selected_pc}`.
-        * High loadings help explain what clinical subtype (e.g. older cardiac patient vs younger smoking patient) the dimension PC maps to.
+    # Interpretations guideline text
+    st.info("""
+        💡 **Clinical PCA Dimension Interpretation Guideline**:
+        * **Diverging Colormap (Red-to-Blue)**: Blue cells indicate strong positive feature associations; Red cells indicate strong negative associations.
+        * **Eigenvector Loading Scores**: Values range from -1.0 to +1.0. A magnitude close to 1.0 (or cell values |x| > 0.4) indicates that the feature is a core driver of that specific Principal Component's direction (clinical subtype definition).
     """)
 
 

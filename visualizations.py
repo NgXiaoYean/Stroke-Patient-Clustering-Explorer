@@ -82,11 +82,24 @@ def plot_eps_search(result: ClusteringResult) -> go.Figure:
     )
     if result.selected_eps is not None:
         figure.add_vline(x=result.selected_eps, line_dash="dash", line_color="#C0392B")
+    figure.update_xaxes(
+        showgrid=True,
+        gridcolor="#EAF0F6",
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
+    figure.update_yaxes(
+        showgrid=True,
+        gridcolor="#EAF0F6",
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
     figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=True, gridcolor="#e2e8f0"),
-        yaxis=dict(showgrid=True, gridcolor="#e2e8f0")
+        font=dict(color="#000000", family="sans-serif")
     )
     return figure
 
@@ -226,9 +239,20 @@ def plot_pca_scree(var_df: pd.DataFrame, pca_variance: float, n_components: int)
         line_color="#10B981",
         line_width=2,
         annotation_text=f"Target variance: {cutoff_val:.0f}% (Retained {n_components} PCs)",
-        annotation_position="bottom right"
+        annotation_position="bottom right",
+        annotation_font=dict(color="#000000", family="sans-serif", size=11)
     )
     
+    fig_scree.update_xaxes(
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
+    fig_scree.update_yaxes(
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
     fig_scree.update_layout(
         title="PCA Cumulative & Individual Variance Ratios",
         xaxis_title="Principal Components",
@@ -237,6 +261,7 @@ def plot_pca_scree(var_df: pd.DataFrame, pca_variance: float, n_components: int)
         margin=dict(t=80),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#000000", family="sans-serif"),
         xaxis=dict(showgrid=True, gridcolor="#e2e8f0"),
         yaxis=dict(showgrid=True, gridcolor="#e2e8f0")
     )
@@ -255,12 +280,23 @@ def plot_pca_loadings_bar(loadings: pd.DataFrame, selected_pc: str) -> go.Figure
         range_color=[-1.0, 1.0],
         title=f"Feature Contribution Weights (Loadings) for {selected_pc}"
     )
+    fig_loadings.update_xaxes(
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
+    fig_loadings.update_yaxes(
+        linecolor="#000000",
+        tickfont=dict(color="#000000", family="sans-serif", size=11),
+        title_font=dict(color="#000000", family="sans-serif")
+    )
     fig_loadings.update_layout(
         xaxis_title="Loading Coefficient (Weight)",
         yaxis_title="Feature Dimension",
         height=500,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#000000", family="sans-serif"),
         xaxis=dict(showgrid=True, gridcolor="#e2e8f0"),
         yaxis=dict(showgrid=True, gridcolor="#e2e8f0")
     )
@@ -572,11 +608,14 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
         ],
         horizontal_spacing=0.15
     )
+
+    BINS = 40
     
     # Left plot: Raw Distribution
     fig.add_trace(
         go.Histogram(
             x=raw_series,
+            nbinsx=BINS,
             marker_color="#356C9B",
             opacity=0.8,
             name="Raw Value",
@@ -589,6 +628,7 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
     fig.add_trace(
         go.Histogram(
             x=scaled_series,
+            nbinsx=BINS,
             marker_color="#F59E0B",
             opacity=0.8,
             name="Scaled Value (Robust)",
@@ -636,6 +676,137 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=60, r=40, t=55, b=45),
+        font=dict(family="sans-serif", color="#000000")
+    )
+    return fig
+
+
+def plot_encoding_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_cols: list[str], feature: str) -> go.Figure:
+    """Generate an interactive binary-mapping heatmap showing how categorical categories convert to One-Hot bits."""
+    # Take first 12 sample rows
+    num_samples = 12
+    raw_sample = raw_data[feature].head(num_samples).reset_index(drop=True)
+    
+    # Identify generated one-hot columns
+    generated_cols = [c for c in prep_cols if c.startswith(f"{feature}_") or c == feature]
+    
+    prep_df = pd.DataFrame(prep_data, columns=prep_cols)
+    prep_sample = prep_df[generated_cols].head(num_samples).reset_index(drop=True)
+    
+    # Make human-readable y-axis labels (Title-case values like 'Formerly Smoked')
+    y_labels = [f"Patient {i+1} : <b>{str(val).replace('_', ' ').title()}</b>" for i, val in enumerate(raw_sample)]
+    x_labels = [c for c in generated_cols]
+    
+    # Create binary heatmap matrix
+    z_matrix = prep_sample.values
+    
+    # Format X-axis headers with a line break to keep them vertically stacked and perfectly aligned
+    prefix_clean = feature.replace('_', ' ').title()
+    cleaned_x_labels = []
+    for col in x_labels:
+        prefix_pattern = f"{feature}_"
+        if col.startswith(prefix_pattern):
+            broken_name = col.replace(prefix_pattern, f"{feature}_<br>")
+        else:
+            broken_name = col
+        cleaned_x_labels.append(f"<b>{broken_name}</b>")
+    
+    fig = px.imshow(
+        z_matrix,
+        x=cleaned_x_labels,
+        y=y_labels,
+        color_continuous_scale=[[0, "#E2E8F0"], [1, "#4E79A7"]], # Light gray for 0, Slate Blue for 1
+        aspect="auto",
+        title=f"<b>One-Hot Encoding Bit Grid for '{prefix_clean}' (Sample of Patients Target Mapping)</b>"
+    )
+    
+    fig.update_coloraxes(showscale=False)
+    
+    # Annotate cell values directly
+    for r_idx in range(z_matrix.shape[0]):
+        for c_idx in range(z_matrix.shape[1]):
+            val = int(z_matrix[r_idx, c_idx])
+            fig.add_annotation(
+                x=c_idx,
+                y=r_idx,
+                text=str(val),
+                showarrow=False,
+                font=dict(color="#000000" if val == 0 else "#FFFFFF", size=12)
+            )
+            
+    fig.update_xaxes(
+        tickfont=dict(color="#000000", family="sans-serif", size=10),
+        side="top", # Put labels on top
+        tickangle=0 # Force horizontal alignment to eliminate weird diagonal anchors
+    )
+    fig.update_yaxes(
+        tickfont=dict(color="#000000", family="sans-serif", size=11)
+    )
+    
+    fig.update_layout(
+        height=405, # Nudged layout height for stacked tick names
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=160, r=40, t=110, b=40), # Restored comfortable margin
+        font=dict(family="sans-serif", color="#000000")
+    )
+    return fig
+
+
+def plot_pca_loadings_heatmap(loadings_df: pd.DataFrame) -> go.Figure:
+    """Generate a combined heatmap of PCA feature weights for all components at once."""
+    import plotly.graph_objects as go
+    import plotly.express as px
+    
+    # Format Y = Features, X = PCs
+    cleaned_y_labels = [f"<b>{idx.replace('_', ' ').title()}</b>" for idx in loadings_df.index]
+    cleaned_x_labels = [f"<b>{col}</b>" for col in loadings_df.columns]
+    
+    z_matrix = loadings_df.values
+    
+    fig = px.imshow(
+        z_matrix,
+        x=cleaned_x_labels,
+        y=cleaned_y_labels,
+        color_continuous_scale="RdBu", # Cool Red-to-Blue diverging colormap prefix
+        range_color=[-1.0, 1.0],
+        aspect="auto",
+        title="<b>PCA Feature Weight Heatmap (All Components Eigenvectors combined)</b>"
+    )
+    
+    fig.update_layout(coloraxis_colorbar=dict(
+        title="Loading weight",
+        thickness=15,
+        len=0.6,
+        tickfont=dict(color="#000000", size=10)
+    ))
+    
+    # Annotate cell numbers
+    for r_idx in range(z_matrix.shape[0]):
+        for c_idx in range(z_matrix.shape[1]):
+            val = z_matrix[r_idx, c_idx]
+            font_color = "#FFFFFF" if abs(val) > 0.45 else "#000000"
+            fig.add_annotation(
+                x=c_idx,
+                y=r_idx,
+                text=f"{val:.2f}",
+                showarrow=False,
+                font=dict(color=font_color, size=9)
+            )
+            
+    fig.update_xaxes(
+        tickfont=dict(color="#000000", family="sans-serif", size=10),
+        side="top"
+    )
+    fig.update_yaxes(
+        tickfont=dict(color="#000000", family="sans-serif", size=11)
+    )
+    
+    fig.update_layout(
+        height=550,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=165, r=40, t=90, b=40),
         font=dict(family="sans-serif", color="#000000")
     )
     return fig
