@@ -811,3 +811,188 @@ def plot_pca_loadings_heatmap(loadings_df: pd.DataFrame) -> go.Figure:
     )
     return fig
 
+
+
+# --- MeanShift-specific visualisations ---
+
+def plot_bandwidth_sweep(result):
+    import plotly.graph_objects as go
+
+    if result.parameter_results is None:
+        raise ValueError("MeanShift parameter_results sweep table is required.")
+
+    sweep = result.parameter_results.copy()
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=sweep["bandwidth"],
+        y=sweep["silhouette"],
+        mode="lines+markers",
+        name="Silhouette Score",
+        line=dict(color="#356C9B", width=3),
+        marker=dict(size=7, color="#356C9B"),
+        hovertemplate="Bandwidth: %{x:.4f}<br>Silhouette: %{y:.4f}<extra></extra>"
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=sweep["bandwidth"],
+        y=sweep["davies_bouldin"],
+        mode="lines+markers",
+        name="Davies-Bouldin Index",
+        line=dict(color="#F59E0B", width=2, dash="dot"),
+        marker=dict(size=6, color="#F59E0B"),
+        yaxis="y2",
+        hovertemplate="Bandwidth: %{x:.4f}<br>Davies-Bouldin: %{y:.4f}<extra></extra>"
+    ))
+
+    if result.selected_eps is not None:
+        fig.add_vline(
+            x=result.selected_eps,
+            line_dash="dash",
+            line_color="#C0392B",
+            annotation_text="Selected BW " + f"{result.selected_eps:.4f}",
+            annotation_font=dict(color="#C0392B", size=11)
+        )
+
+    fig.update_layout(
+        title="Bandwidth Parameter Sweep - Quality Metrics",
+        xaxis=dict(title="Bandwidth", showgrid=True, gridcolor="#e2e8f0"),
+        yaxis=dict(title="Silhouette Score", showgrid=True, gridcolor="#e2e8f0", color="#356C9B"),
+        yaxis2=dict(title="Davies-Bouldin Index", overlaying="y", side="right", showgrid=False, color="#F59E0B"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=80),
+    )
+    return fig
+
+
+def plot_meanshift_cluster_scatter(result):
+    import plotly.graph_objects as go
+    import plotly.express as px
+    import pandas as pd
+
+    frame = pd.DataFrame({
+        "PC1": result.projection_2d[:, 0],
+        "PC2": result.projection_2d[:, 1],
+        "cluster": result.labels.astype(str)
+    })
+    frame["cluster"] = frame["cluster"].replace("-1", "Noise")
+
+    fig = px.scatter(
+        frame, x="PC1", y="PC2", color="cluster", opacity=0.62,
+        title="Patient Clusters - 2D PCA Projection (MeanShift)",
+        color_discrete_sequence=px.colors.qualitative.Vivid
+    )
+
+    unique_labels = sorted(set(result.labels))
+    for lbl in unique_labels:
+        if lbl == -1:
+            continue
+        mask = result.labels == lbl
+        cx = float(result.projection_2d[mask, 0].mean())
+        cy = float(result.projection_2d[mask, 1].mean())
+        fig.add_trace(go.Scatter(
+            x=[cx], y=[cy],
+            mode="markers+text",
+            marker=dict(size=18, symbol="star", color="white",
+                        line=dict(color="#1e3c72", width=2)),
+            text=["C" + str(lbl)],
+            textposition="middle center",
+            textfont=dict(size=9, color="#1e3c72"),
+            showlegend=False,
+            hovertemplate="Cluster " + str(lbl) + " centroid<extra></extra>"
+        ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=True, gridcolor="#e2e8f0"),
+        yaxis=dict(showgrid=True, gridcolor="#e2e8f0"),
+        legend_title_text="Cluster"
+    )
+    return fig
+
+
+def plot_cluster_profile_radar(result):
+    import plotly.graph_objects as go
+    import plotly.express as px
+
+    summary = result.cluster_summary.copy()
+    if summary.empty:
+        fig = go.Figure()
+        fig.update_layout(title="No clusters to profile.")
+        return fig
+
+    axes = ["age_mean", "glucose_mean", "bmi_mean", "stroke_rate"]
+    axis_labels = ["Mean Age", "Mean Glucose", "Mean BMI", "Stroke Rate"]
+
+    normed = summary[axes].copy()
+    for col in axes:
+        col_min, col_max = normed[col].min(), normed[col].max()
+        rng = col_max - col_min
+        normed[col] = (normed[col] - col_min) / rng if rng > 0 else 0.5
+
+    colors = px.colors.qualitative.Vivid
+    fig = go.Figure()
+    for i, row in summary.iterrows():
+        clabel = int(row["cluster"])
+        values = [float(normed.loc[i, c]) for c in axes]
+        values = values + [values[0]]
+        labels_loop = axis_labels + [axis_labels[0]]
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=labels_loop,
+            fill="toself",
+            opacity=0.55,
+            name="Cluster " + str(clabel),
+            line=dict(color=colors[i % len(colors)], width=2),
+        ))
+
+    fig.update_layout(
+        title="Cluster Clinical Risk Profile (Normalised Radar)",
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 1],
+                            tickfont=dict(size=10, color="#334155"),
+                            gridcolor="#CBD5E1"),
+            angularaxis=dict(tickfont=dict(size=12, color="#1e293b"),
+                             gridcolor="#CBD5E1"),
+            bgcolor="rgba(0,0,0,0)"
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.18, xanchor="center", x=0.5),
+        paper_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=80, b=80),
+    )
+    return fig
+
+
+def plot_cluster_size_distribution(result):
+    import plotly.graph_objects as go
+
+    summary = result.cluster_summary.copy()
+    if summary.empty:
+        return go.Figure()
+
+    summary = summary.sort_values("patients", ascending=True)
+    summary["label"] = summary["cluster"].apply(lambda c: "Cluster " + str(int(c)))
+    colors = summary["elevated_risk"].map({True: "#C0392B", False: "#356C9B"}).tolist()
+
+    fig = go.Figure(go.Bar(
+        y=summary["label"],
+        x=summary["patients"],
+        orientation="h",
+        marker=dict(color=colors),
+        text=summary["patients"].astype(str),
+        textposition="outside",
+        hovertemplate="<b>%{y}</b><br>Patients: %{x}<extra></extra>"
+    ))
+
+    fig.update_layout(
+        title="Patient Count per Cluster",
+        xaxis=dict(title="Number of Patients", showgrid=True, gridcolor="#e2e8f0"),
+        yaxis=dict(title=""),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=60, t=60, b=40),
+    )
+    return fig

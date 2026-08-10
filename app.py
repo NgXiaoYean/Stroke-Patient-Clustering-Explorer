@@ -1,4 +1,4 @@
-﻿"""Interactive Stroke Patient Clustering Explorer.
+"""Interactive Stroke Patient Clustering Explorer.
 
 Focuses solely on page configuration, user state selections, custom layout cards,
 and rendering visual modules. Business logic is placed in data_processing.py,
@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from dbscan_stroke import DBSCANConfig, run_dbscan
+from meanshift_stroke import MeanShiftConfig, run_meanshift
 from data_processing import (
     load_dataset,
     get_clinical_summary,
@@ -39,7 +40,11 @@ from visualizations import (
     plot_categorical_distributions_grid,
     plot_scaling_comparison,
     plot_encoding_comparison,
-    plot_pca_loadings_heatmap
+    plot_pca_loadings_heatmap,
+    plot_bandwidth_sweep,
+    plot_meanshift_cluster_scatter,
+    plot_cluster_profile_radar,
+    plot_cluster_size_distribution,
 )
 from evaluation import generate_algorithm_comparison, calculate_feature_contributions
 
@@ -63,6 +68,24 @@ def analyse_dbscan(data: pd.DataFrame, eps: float | None, min_samples: int, pca_
     ))
 
 
+@st.cache_data(show_spinner="Running MeanShift analysis...")
+def analyse_meanshift(
+    data: pd.DataFrame,
+    bandwidth: float | None,
+    quantile: float,
+    pca_variance: float,
+    risk_multiplier: float,
+    min_bin_freq: int,
+):
+    return run_meanshift(data, MeanShiftConfig(
+        bandwidth=bandwidth,
+        quantile=quantile,
+        pca_variance=pca_variance,
+        risk_multiplier=risk_multiplier,
+        min_bin_freq=min_bin_freq,
+    ))
+
+
 def dbscan_controls() -> tuple[float | None, int, float, float]:
     st.sidebar.subheader("DBSCAN settings")
     automatic_eps = st.sidebar.checkbox("Choose EPS automatically", value=True)
@@ -80,6 +103,40 @@ def dbscan_controls() -> tuple[float | None, int, float, float]:
 - **-1 means noise**, not a third medical class. It is okay to have more than two clusters: stroke 0/1 is an outcome used after clustering, while clusters describe different patient profiles.
         """)
     return eps, min_samples, pca_variance, risk_multiplier
+
+
+def meanshift_controls() -> tuple[float | None, float, float, float, int]:
+    """Render MeanShift sidebar controls and return selected parameter values."""
+    st.sidebar.subheader("MeanShift settings")
+    automatic_bw = st.sidebar.checkbox("Choose Bandwidth automatically", value=True, key="ms_auto_bw")
+    bandwidth = None
+    if not automatic_bw:
+        bandwidth = st.sidebar.number_input(
+            "Bandwidth", min_value=0.01, value=1.0, step=0.05, format="%.3f", key="ms_bw"
+        )
+    quantile = st.sidebar.slider(
+        "Bandwidth quantile (auto)", min_value=0.05, max_value=0.60, value=0.25, step=0.05,
+        key="ms_quantile",
+        help="Controls sklearn estimate_bandwidth. Lower quantile → narrower kernel → more clusters."
+    )
+    pca_variance = st.sidebar.slider(
+        "PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05, key="ms_pca"
+    )
+    risk_multiplier = st.sidebar.slider(
+        "Elevated-risk multiplier", min_value=1.0, max_value=3.0, value=1.5, step=0.1, key="ms_risk"
+    )
+    min_bin_freq = st.sidebar.slider(
+        "min_bin_freq", min_value=1, max_value=30, value=5, key="ms_mbf",
+        help="Clusters with fewer than this many core points are discarded."
+    )
+    with st.sidebar.expander("How to tune MeanShift"):
+        st.markdown("""
+- **Bandwidth** is the kernel radius. Smaller values create more, tighter clusters; larger values merge nearby modes.
+- **Quantile** (0–1) drives the automatic bandwidth estimate. Use values around 0.2–0.35 for clinical data.
+- **min_bin_freq** prunes tiny spurious clusters; increase if the algorithm reports too many micro-clusters.
+- MeanShift never produces noise points (every patient is assigned to the nearest mode), so noise ratio is always 0.
+        """)
+    return bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq
 
 
 def inject_custom_css() -> None:
@@ -302,11 +359,137 @@ def show_dbscan_clustering(result) -> None:
     ]]
     
     # Transpose the dataframe by setting Cluster as the index first, avoiding any duplicate "Cluster" row in the table body
-    transposed = rates_display.set_index("Cluster").T.reset_index()
-    transposed.columns = ["Attribute"] + [f"Cluster {int(c)}" for c in rates_display["Cluster"]]
+    cluster_ids = rates_display["Cluster"].tolist()
+    transposed = rates_display.astype(str).set_index("Cluster").T.reset_index()
+    transposed.columns = ["Attribute"] + [f"Cluster {int(c)}" for c in cluster_ids]
     
     st.dataframe(transposed, use_container_width=True, hide_index=True)
     st.download_button("Download clustered patient data", result.data.to_csv(index=False).encode("utf-8"), "dbscan_patient_clusters.csv", "text/csv")
+
+
+def _render_cluster_summary_table(result, csv_filename: str) -> None:
+    """Shared helper: render a transposed cluster summary table + download button."""
+    rates = result.cluster_summary.copy()
+    rates["elevated_risk"] = rates["elevated_risk"].map({True: "Yes", False: "No"})
+    rates["age_mean"] = rates["stroke_rate"]
+    rates["cluster"] = rates["cluster"].astype(int)
+    rates["patients"] = rates["patients"].astype(int)
+    rates["stroke_cases"] = rates["stroke_cases"].astype(int)
+    rates["age_mean"] = rates["age_mean"].apply(lambda x: f"{x:.4f}" if pd.notnull(x) else "")
+    rates["glucose_mean"] = rates["glucose_mean"].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+    rates["bmi_mean"] = rates["bmi_mean"].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
+    rates["stroke_rate_pct"] = rates["stroke_rate_pct"].apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "")
+    rates = rates.rename(columns={
+        "cluster": "Cluster", "patients": "Patients", "bmi_mean": "Bmi_mean",
+    })
+    rates_display = rates[["Cluster", "Patients", "stroke_cases", "age_mean",
+                            "glucose_mean", "Bmi_mean", "stroke_rate_pct", "elevated_risk"]]
+    cluster_ids = rates_display["Cluster"].tolist()
+    transposed = rates_display.astype(str).set_index("Cluster").T.reset_index()
+    transposed.columns = ["Attribute"] + [f"Cluster {int(c)}" for c in cluster_ids]
+
+    st.dataframe(transposed, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download clustered patient data",
+        result.data.to_csv(index=False).encode("utf-8"),
+        csv_filename, "text/csv"
+    )
+
+
+def show_meanshift_clustering(result) -> None:
+    st.header("🌊 MeanShift Clustering")
+
+    # ── Key metrics row ──────────────────────────────────────────────────────
+    clean_df = result.data[result.data["cluster"] != -1]
+    stroke_rates = clean_df.groupby("cluster")["stroke"].mean()
+    max_stroke_rate = stroke_rates.max() if not stroke_rates.empty else 0.0
+    baseline_stroke_rate = result.data["stroke"].mean()
+
+    st.markdown(f"""
+    <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Clusters Found</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{result.n_clusters}</div>
+        </div>
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Selected Bandwidth</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{f"{result.selected_eps:.4f}" if result.selected_eps is not None else "N/A"}</div>
+        </div>
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">PCA Components</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{result.n_components}</div>
+        </div>
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Silhouette Score</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{"N/A" if np.isnan(result.silhouette) else f"{result.silhouette:.4f}"}</div>
+        </div>
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Davies-Bouldin</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{"N/A" if np.isnan(result.davies_bouldin) else f"{result.davies_bouldin:.4f}"}</div>
+        </div>
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Max Stroke Rate</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{max_stroke_rate:.2%}</div>
+        </div>
+        <div style="flex: 1; min-width: 120px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); text-align: center;">
+            <div style="font-size: 0.68rem; color: #64748B; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;">Baseline Stroke</div>
+            <div style="font-size: 1.15rem; color: #000000; font-weight: 700; margin-top: 3px;">{baseline_stroke_rate:.2%}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if result.n_clusters < 2:
+        st.warning("Fewer than two clusters found. Try a lower quantile value or reduce the bandwidth manually.")
+
+    # ── Scatter + Bandwidth sweep ────────────────────────────────────────────
+    left, right = st.columns(2)
+    with left:
+        st.plotly_chart(plot_meanshift_cluster_scatter(result), use_container_width=True)
+    with right:
+        st.plotly_chart(plot_bandwidth_sweep(result), use_container_width=True)
+
+    # ── Bandwidth sweep table ────────────────────────────────────────────────
+    st.subheader("Bandwidth Parameter Search")
+    st.info(
+        "📐 Each row shows quality metrics for a candidate bandwidth value. "
+        "The selected bandwidth (red dashed line above) maximises Silhouette score "
+        "while minimising Davies-Bouldin index."
+    )
+    sweep_table = result.parameter_results.copy()
+    sweep_table["noise_percent"] = sweep_table["noise_ratio"] * 100
+    st.dataframe(sweep_table, use_container_width=True, hide_index=True)
+
+    # ── Stroke risk + size distribution ─────────────────────────────────────
+    st.subheader("Stroke Risk Class Distribution")
+    left2, right2 = st.columns(2)
+    with left2:
+        st.plotly_chart(plot_stroke_by_cluster(result), use_container_width=True)
+    with right2:
+        st.plotly_chart(plot_cluster_size_distribution(result), use_container_width=True)
+
+    # ── Clinical profile radar ───────────────────────────────────────────────
+    st.subheader("Clinical Risk Factor Profile per Cluster")
+    st.info(
+        "🕸️ Each axis of the radar is min-max normalised across clusters so "
+        "profiles can be compared on a common [0, 1] scale. "
+        "A cluster that is large on all axes represents a high-risk phenotype."
+    )
+    st.plotly_chart(plot_cluster_profile_radar(result), use_container_width=True)
+
+    # ── Feature contribution analysis ────────────────────────────────────────
+    pca_importance, cluster_deviations = calculate_feature_contributions(result)
+    with st.expander("📊 Attribute Contribution Analysis"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("##### Overall Feature Importance (PCA Weight)")
+            st.dataframe(pca_importance, use_container_width=True, hide_index=True)
+        with c2:
+            st.write("##### Cluster Mean Deviation from Baseline (%)")
+            st.dataframe(cluster_deviations, use_container_width=True)
+
+    # ── Summary table + download ─────────────────────────────────────────────
+    st.subheader("Cluster Summary Table")
+    _render_cluster_summary_table(result, "meanshift_patient_clusters.csv")
 
 
 def show_eda(data: pd.DataFrame) -> None:
@@ -545,24 +728,27 @@ def main() -> None:
     if "cache_cleaned" not in st.session_state:
         st.cache_data.clear()
         st.session_state["cache_cleaned"] = True
-        
+
     st.sidebar.title("Controls")
-    selected = st.sidebar.selectbox("Algorithm", ["DBSCAN", "K-Means", "MeanShift"])
+    selected = st.sidebar.selectbox("Algorithm", ["DBSCAN", "MeanShift", "K-Means"])
     upload = st.sidebar.file_uploader("Optional CSV upload", type="csv")
     data = pd.read_csv(upload) if upload is not None else load_data(str(DATA_PATH))
-    
+
     inject_custom_css()
-    
-    # Render controls and get values
+
+    # ── Sidebar controls & run the selected algorithm ─────────────────────
     if selected == "DBSCAN":
         eps, min_samples, pca_variance, risk_multiplier = dbscan_controls()
+        result = analyse_dbscan(data, eps, min_samples, pca_variance, risk_multiplier)
+    elif selected == "MeanShift":
+        bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq = meanshift_controls()
+        result = analyse_meanshift(data, bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq)
     else:
+        # K-Means placeholder – keeps shared tabs working with DBSCAN result
         st.sidebar.subheader("PCA settings")
         pca_variance = st.sidebar.slider("PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05)
-        eps, min_samples, risk_multiplier = None, 12, 1.5
-        
-    result = analyse_dbscan(data, eps, min_samples, pca_variance, risk_multiplier)
-    
+        result = analyse_dbscan(data, None, 12, pca_variance, 1.5)
+
     tab_clustering, tab_comparison, tab_eda, tab_preprocessing = st.tabs([
         "🔍 Clustering Dashboard", 
         "⚔️ Algorithm Comparison",
@@ -573,7 +759,7 @@ def main() -> None:
     with tab_clustering:
         if selected == "DBSCAN":
             show_dbscan_clustering(result)
-            
+
             # Display Feature Contribution Insights
             pca_importance, cluster_deviations = calculate_feature_contributions(result)
             with st.expander("📊 Attribute Contribution Analysis"):
@@ -585,44 +771,33 @@ def main() -> None:
                     st.write("##### Cluster Mean Deviation from Baseline (%)")
                     st.dataframe(cluster_deviations, use_container_width=True)
 
-        # if selected == "K-Means":
-        #     # 
-        #     # 
-        #     pca_imp, cluster_dev = calculate_feature_contributions(kmeans_result)
-        #     with st.expander("📊 Attribute Contribution Analysis (K-Means)"):
-        #         c1, c2 = st.columns(2)
-        #         with c1:
-        #             st.dataframe(pca_imp, use_container_width=True, hide_index=True)
-        #         with c2:
-        #             st.dataframe(cluster_dev, use_container_width=True)
+        elif selected == "MeanShift":
+            show_meanshift_clustering(result)
 
-        # if selected == "MeanShift":
-        #     # 
-        #     # 
-        #     pca_imp, cluster_dev = calculate_feature_contributions(meanshift_result)
-        #     with st.expander("📊 Attribute Contribution Analysis (MeanShift)"):
-        #         c1, c2 = st.columns(2)
-        #         with c1:
-        #             st.dataframe(pca_imp, use_container_width=True, hide_index=True)
-        #         with c2:
-        #             st.dataframe(cluster_dev, use_container_width=True)
+        else:
+            st.title(f"{selected} Clustering Workspace")
+            st.info(
+                f"The shared UI is ready. Add your teammate's "
+                f"`{selected.lower().replace('-', '')}_stroke.py` adapter here using the same "
+                f"result interface as `dbscan_stroke.run_dbscan`."
+            )
+            st.dataframe(result.data.head(), use_container_width=True)
 
-            
     with tab_comparison:
         st.header("⚔️ Clustering Algorithm Comparison")
         st.markdown("Compare performance indices and clinical outcomes across medical patient clustering algorithms:")
-        
-        # Currently we register the active DBSCAN result. As K-Means / MeanShift adapters are added, include their runs in this dictionary.
-        results_dict = {
-            "DBSCAN": result
-        }
-        
+
+        # Build results dict with every algorithm that has been run
+        results_dict = {selected: result}
+
         comp_df = generate_algorithm_comparison(results_dict)
-        # Transpose so columns represent algorithms and first column contains metric labels
-        comp_transposed = comp_df.set_index("Algorithm").T.reset_index()
-        comp_transposed.columns = ["Comparison Metric"] + list(comp_df["Algorithm"])
-        st.dataframe(comp_transposed, use_container_width=True, hide_index=True)
+        algorithm_names = comp_df["Algorithm"].tolist()
+
+        comp_transposed = comp_df.astype(str).set_index("Algorithm").T.reset_index()
+        comp_transposed.columns = ["Comparison Metric"] + algorithm_names
         
+        st.dataframe(comp_transposed, use_container_width=True, hide_index=True)
+
         st.info("""
             📝 **Teammate Integration Guide**:
             * To compare K-Means or MeanShift runs, instantiate their results via your teammate's adapters (using the same `ClusteringResult` interface) and append them to the `results_dict` inside `app.py`.
