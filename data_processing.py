@@ -7,13 +7,18 @@ from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, StandardScaler
+from scipy.stats import chi2_contingency
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import log_loss
+from scipy.stats import chi2 as chi2_dist
+import pandas as pd
+
 
 RANDOM_STATE = 42
 NUMERIC_COLUMNS = ["age", "avg_glucose_level", "bmi"]
 BINARY_COLUMNS = ["hypertension", "heart_disease"]
-CATEGORICAL_COLUMNS = ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
+CATEGORICAL_COLUMNS = ["ever_married", "smoking_status"]
 REQUIRED_COLUMNS = NUMERIC_COLUMNS + BINARY_COLUMNS + CATEGORICAL_COLUMNS + ["stroke"]
-
 
 def load_dataset(path: str | Path) -> pd.DataFrame:
     return pd.read_csv(Path(path))
@@ -44,7 +49,7 @@ def build_preprocessor() -> ColumnTransformer:
     # Create sklearn transformer for scaling and encoding
     return ColumnTransformer([
         ("numeric", Pipeline([("scale", RobustScaler())]), NUMERIC_COLUMNS),
-        ("binary", Pipeline([("scale", StandardScaler())]), BINARY_COLUMNS),
+        ("binary", "passthrough", BINARY_COLUMNS),
         ("category", _encoder(), CATEGORICAL_COLUMNS),
     ])
 
@@ -96,6 +101,7 @@ def apply_pca(processed: np.ndarray, feature_names: list[str], pca_variance: flo
     """
     pca_selected = PCA(n_components=pca_variance, svd_solver="full", random_state=RANDOM_STATE)
     features = pca_selected.fit_transform(processed)
+    features = StandardScaler().fit_transform(features)
     
     projection_2d = PCA(n_components=2, random_state=RANDOM_STATE).fit_transform(processed)
     
@@ -130,6 +136,71 @@ def calculate_cluster_summary(data: pd.DataFrame, risk_multiplier: float) -> pd.
     summary["elevated_risk"] = summary["stroke_rate"] > overall_rate * risk_multiplier
     return summary.round({"age_mean": 1, "glucose_mean": 1, "bmi_mean": 1})
 
+def test_categorical_association(data: pd.DataFrame) -> pd.DataFrame:
+    """Chi-square test of each raw categorical/demographic column against stroke,
+    used to justify which categorical features are retained for clustering."""
+    candidates = ["gender", "Residence_type", "work_type", "ever_married", "smoking_status"]
+    rows = []
+    for col in candidates:
+        if col not in data.columns:
+            continue
+        contingency = pd.crosstab(data[col], data["stroke"])
+        chi2, p_value, _, _ = chi2_contingency(contingency)
+        rates = data.groupby(col)["stroke"].mean() * 100
+        rows.append({
+            "Feature": col,
+            "Stroke Rate Range (%)": f"{rates.min():.2f} – {rates.max():.2f}",
+            "Chi-square p-value": "< 0.001" if p_value < 0.001 else f"{p_value:.3f}",
+            "Associated with Stroke (p<0.05)": p_value < 0.05,
+        })
+    return pd.DataFrame(rows)
+
+def test_confounding_with_age(data: pd.DataFrame) -> pd.DataFrame:
+    """Likelihood-ratio test using Scikit-Learn: does `categorical_col` predict 
+    stroke beyond age alone?
+    """
+    candidates = ["gender", "Residence_type", "work_type", "ever_married", "smoking_status"]
+    rows = []
+    
+    # Define Target and Base Feature
+    y = data["stroke"]
+    X_base = data[["age"]]
+    
+    # 1. Fit Base Model (penalty=None is required for accurate statistical testing)
+    base_model = LogisticRegression(penalty=None)
+    base_model.fit(X_base, y)
+    
+    # Calculate Log-Likelihood for base model
+    # Math note: Log-Likelihood = -(Log Loss * Number of samples)
+    llf_base = -log_loss(y, base_model.predict_proba(X_base)) * len(y)
+    
+    for col in candidates:
+        if col not in data.columns:
+            continue
+            
+        # 2. Fit Full Model (Age + Categorical Column)
+        # We must use pd.get_dummies to convert text classes into binary numbers
+        X_full = pd.get_dummies(data[["age", col]], columns=[col], drop_first=True)
+        
+        full_model = LogisticRegression(penalty=None, max_iter=1000)
+        full_model.fit(X_full, y)
+        
+        # Calculate Log-Likelihood for full model
+        llf_full = -log_loss(y, full_model.predict_proba(X_full)) * len(y)
+        
+        # 3. Calculate Likelihood-Ratio Test
+        lr_stat = 2 * (llf_full - llf_base)
+        df_diff = X_full.shape[1] - X_base.shape[1]
+        p_value = chi2_dist.sf(lr_stat, df_diff)
+        
+        rows.append({
+            "Feature": col,
+            "LR Statistic": round(lr_stat, 4),
+            "p-value (Controlling for Age)": "< 0.001" if p_value < 0.001 else f"{p_value:.3f}",
+            "Adds Value Beyond Age (p < 0.05)": p_value < 0.05
+        })
+        
+    return pd.DataFrame(rows)
 
 def get_clinical_summary(data: pd.DataFrame) -> dict[str, float]:
     # Calc summary data overview 
