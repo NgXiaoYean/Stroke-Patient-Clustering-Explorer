@@ -1,4 +1,4 @@
-"""Interactive Stroke Patient Clustering Explorer.
+﻿"""Interactive Stroke Patient Clustering Explorer.
 
 Focuses solely on page configuration, user state selections, custom layout cards,
 and rendering visual modules. Business logic is placed in data_processing.py,
@@ -22,7 +22,9 @@ from data_processing import (
     get_preprocessing_previews,
     get_pca_scree_data,
     get_pca_loadings,
-    get_data_quality_report
+    get_data_quality_report,
+    test_categorical_association,
+    test_confounding_with_age
 )
 from visualizations import (
     plot_cluster_scatter,
@@ -88,11 +90,16 @@ def analyse_meanshift(
 
 def dbscan_controls() -> tuple[float | None, int, float, float]:
     st.sidebar.subheader("DBSCAN settings")
-    automatic_eps = st.sidebar.checkbox("Choose EPS automatically", value=True)
+    automatic_eps = st.sidebar.checkbox("Choose EPS automatically", value=False)
     eps = None
     if not automatic_eps:
-        eps = st.sidebar.number_input("EPS", min_value=0.01, value=1.0, step=0.05, format="%.2f")
-    min_samples = st.sidebar.slider("min_samples", min_value=3, max_value=40, value=12)
+        # Change the default value to 0.66 (or 0.658 if you change the format to "%.3f")
+        eps = st.sidebar.number_input("EPS", min_value=0.01, value=0.66, step=0.05, format="%.2f")
+    
+    # Ensure min_samples defaults to 20
+    min_samples = st.sidebar.slider("min_samples", min_value=3, max_value=40, value=20)
+    
+    # Ensure PCA defaults to 0.90
     pca_variance = st.sidebar.slider("PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05)
     risk_multiplier = st.sidebar.slider("Elevated-risk multiplier", min_value=1.0, max_value=3.0, value=1.5, step=0.1)
     with st.sidebar.expander("How to tune DBSCAN"):
@@ -587,6 +594,16 @@ def show_eda(data: pd.DataFrame) -> None:
     corr_matrix, readable_labels = get_correlation_matrix(data)
     fig_corr = plot_correlation_heatmap(corr_matrix, readable_labels)
     st.plotly_chart(fig_corr, use_container_width=True)
+
+    st.subheader("Categorical Feature Association (Chi-Square Test)")
+    st.markdown("This test proves which lifestyle/demographic features have a statistically significant relationship with stroke risk, justifying which columns we keep or drop for clustering.")
+    chi2_df = test_categorical_association(data)
+    st.dataframe(chi2_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Confounding Variable Test (Likelihood-Ratio)")
+    st.markdown("This test checks if a feature actually causes strokes, or if it is just a side-effect of getting older. If the feature does not add predictive value beyond age, it can safely be dropped from the clustering model.")
+    lr_df = test_confounding_with_age(data)
+    st.dataframe(lr_df, use_container_width=True, hide_index=True)
     
     st.info("""
         💡 **Data Pipeline Execution Note**:
@@ -668,7 +685,9 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
     # Table 2: Categorical Feature Encoding
     st.subheader("Categorical Feature Encoding")
     cat_stats = []
-    for col in ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]:
+    all_cats = ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"]
+    surviving_cats = [col for col in all_cats if any(c.startswith(col) for c in prep_df.columns)]
+    for col in surviving_cats:
         raw_classes = sorted(data[col].dropna().unique().tolist())
         raw_classes_cleaned = [c.replace("_", " ").title() for c in raw_classes]
         
@@ -693,7 +712,7 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
     st.markdown("Select a categorical feature to see how patient categories map to model column bits:")
     selected_encode_feature = st.selectbox(
         "Select Categorical Feature to inspect encoding map:",
-        ["gender", "ever_married", "work_type", "Residence_type", "smoking_status"],
+        surviving_cats,
         format_func=lambda x: x.replace('_', ' ').title()
     )
     fig_encode_comp = plot_encoding_comparison(data, result.preprocessed_data, result.preprocessed_feature_names, selected_encode_feature)
@@ -731,8 +750,7 @@ def main() -> None:
 
     st.sidebar.title("Controls")
     selected = st.sidebar.selectbox("Algorithm", ["DBSCAN", "MeanShift", "K-Means"])
-    upload = st.sidebar.file_uploader("Optional CSV upload", type="csv")
-    data = pd.read_csv(upload) if upload is not None else load_data(str(DATA_PATH))
+    data = load_data(str(DATA_PATH))
 
     inject_custom_css()
 
