@@ -14,6 +14,7 @@ import streamlit as st
 
 from dbscan_stroke import DBSCANConfig, run_dbscan
 from meanshift_stroke import MeanShiftConfig, run_meanshift
+from kmeans_stroke import KMeansConfig, run_kmeans
 from data_processing import (
     load_dataset,
     get_clinical_summary,
@@ -87,6 +88,14 @@ def analyse_meanshift(
         min_bin_freq=min_bin_freq,
     ))
 
+@st.cache_data(show_spinner="Running K-Means analysis...")
+def analyse_kmeans(data: pd.DataFrame, n_clusters: int | None, pca_variance: float, risk_multiplier: float, max_k: int):
+    return run_kmeans(data, KMeansConfig(
+        n_clusters=n_clusters,
+        pca_variance=pca_variance,
+        risk_multiplier=risk_multiplier,
+        max_k=max_k,
+    ))
 
 def dbscan_controls() -> tuple[float | None, int, float, float]:
     st.sidebar.subheader("DBSCAN settings")
@@ -145,6 +154,31 @@ def meanshift_controls() -> tuple[float | None, float, float, float, int]:
         """)
     return bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq
 
+def kmeans_controls() -> tuple[int | None, float, float, int]:
+    st.sidebar.subheader("K-Means settings")
+    automatic_k = st.sidebar.checkbox("Choose K automatically", value=True, key="km_auto_k")
+    n_clusters = None
+    if not automatic_k:
+        n_clusters = st.sidebar.slider("Number of clusters (K)", min_value=2, max_value=10, value=3, key="km_k")
+    max_k = st.sidebar.slider(
+        "Maximum K to evaluate", min_value=3, max_value=15, value=10, key="km_max_k",
+        help="Automatic mode evaluates K=2 up to this value and selects the highest Silhouette score."
+    )
+    pca_variance = st.sidebar.slider(
+        "PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05, key="km_pca"
+    )
+    risk_multiplier = st.sidebar.slider(
+        "Elevated-risk multiplier", min_value=1.0, max_value=3.0, value=1.5, step=0.1, key="km_risk"
+    )
+    with st.sidebar.expander("How to tune K-Means"):
+        st.markdown("""
+- **K** is the number of patient groups. Automatic mode tests several K values and selects the highest Silhouette score.
+- **Silhouette Score**: higher is better (better-separated, more cohesive clusters).
+- **Davies-Bouldin Index**: lower is better.
+- **Inertia** decreases as K increases, so use it with the elbow pattern rather than minimising it blindly.
+- K-Means assigns every patient to a cluster, so its noise ratio is always 0.
+        """)
+    return n_clusters, pca_variance, risk_multiplier, max_k
 
 def inject_custom_css() -> None:
     st.markdown("""
@@ -498,6 +532,59 @@ def show_meanshift_clustering(result) -> None:
     st.subheader("Cluster Summary Table")
     _render_cluster_summary_table(result, "meanshift_patient_clusters.csv")
 
+def show_kmeans_clustering(result) -> None:
+    st.header("🎯 K-Means Clustering")
+
+    clean_df = result.data[result.data["cluster"] != -1]
+    stroke_rates = clean_df.groupby("cluster")["stroke"].mean()
+    max_stroke_rate = stroke_rates.max() if not stroke_rates.empty else 0.0
+    baseline_stroke_rate = result.data["stroke"].mean()
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Clusters (K)", result.selected_k)
+    c2.metric("PCA Components", result.n_components)
+    c3.metric("Silhouette", f"{result.silhouette:.4f}")
+    c4.metric("Davies-Bouldin", f"{result.davies_bouldin:.4f}")
+    c5.metric("Max Stroke Rate", f"{max_stroke_rate:.2%}")
+    c6.metric("Baseline Stroke", f"{baseline_stroke_rate:.2%}")
+
+    left, right = st.columns(2)
+    with left:
+        st.plotly_chart(plot_cluster_scatter(result), use_container_width=True)
+    with right:
+        search = result.parameter_results.copy()
+        import plotly.express as px
+        fig = px.line(search, x="k", y="silhouette", markers=True,
+                      hover_data=["inertia", "davies_bouldin"],
+                      title="K Search: Silhouette Score")
+        fig.add_vline(x=result.selected_k, line_dash="dash", line_color="#C0392B")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("K Parameter Search")
+    st.dataframe(result.parameter_results, use_container_width=True, hide_index=True)
+
+    st.subheader("Stroke Risk Class Distribution")
+    left2, right2 = st.columns(2)
+    with left2:
+        st.plotly_chart(plot_stroke_by_cluster(result), use_container_width=True)
+    with right2:
+        st.plotly_chart(plot_cluster_size_distribution(result), use_container_width=True)
+
+    st.subheader("Clinical Risk Factor Profile per Cluster")
+    st.plotly_chart(plot_cluster_profile_radar(result), use_container_width=True)
+
+    pca_importance, cluster_deviations = calculate_feature_contributions(result)
+    with st.expander("📊 Attribute Contribution Analysis"):
+        a, b = st.columns(2)
+        with a:
+            st.write("##### Overall Feature Importance (PCA Weight)")
+            st.dataframe(pca_importance, use_container_width=True, hide_index=True)
+        with b:
+            st.write("##### Cluster Mean Deviation from Baseline (%)")
+            st.dataframe(cluster_deviations, use_container_width=True)
+
+    st.subheader("Cluster Summary Table")
+    _render_cluster_summary_table(result, "kmeans_patient_clusters.csv")
 
 def show_eda(data: pd.DataFrame) -> None:
     st.header("📊 Description and Analysis of Dataset")
@@ -762,10 +849,13 @@ def main() -> None:
         bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq = meanshift_controls()
         result = analyse_meanshift(data, bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq)
     else:
+        n_clusters, pca_variance, risk_multiplier, max_k = kmeans_controls()
+        result = analyse_kmeans(data, n_clusters, pca_variance, risk_multiplier, max_k)
+
         # K-Means placeholder – keeps shared tabs working with DBSCAN result
-        st.sidebar.subheader("PCA settings")
-        pca_variance = st.sidebar.slider("PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05)
-        result = analyse_dbscan(data, None, 12, pca_variance, 1.5)
+        #st.sidebar.subheader("PCA settings")
+        #pca_variance = st.sidebar.slider("PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05)
+        #result = analyse_dbscan(data, None, 12, pca_variance, 1.5)
 
     tab_clustering, tab_comparison, tab_eda, tab_preprocessing = st.tabs([
         "🔍 Clustering Dashboard", 
@@ -793,13 +883,8 @@ def main() -> None:
             show_meanshift_clustering(result)
 
         else:
-            st.title(f"{selected} Clustering Workspace")
-            st.info(
-                f"The shared UI is ready. Add your teammate's "
-                f"`{selected.lower().replace('-', '')}_stroke.py` adapter here using the same "
-                f"result interface as `dbscan_stroke.run_dbscan`."
-            )
-            st.dataframe(result.data.head(), use_container_width=True)
+            show_kmeans_clustering(result)
+
 
     with tab_comparison:
         st.header("⚔️ Clustering Algorithm Comparison")
