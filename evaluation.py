@@ -31,6 +31,10 @@ class ClusteringResult:
     k_distances: np.ndarray | None = None
     parameter_results: pd.DataFrame | None = None
 
+    # K-Means-specific result fields
+    selected_k: int | None = None
+    inertia: float | None = None
+
 
 def calculate_clustering_metrics(features: np.ndarray, labels: np.ndarray) -> dict[str, float | int]:
     # SIlhouette & Davies-Bouldin index 
