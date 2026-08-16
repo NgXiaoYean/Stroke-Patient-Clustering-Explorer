@@ -166,8 +166,10 @@ def test_confounding_with_age(data: pd.DataFrame) -> pd.DataFrame:
     y = data["stroke"]
     X_base = data[["age"]]
     
-    # 1. Fit Base Model (penalty=None is required for accurate statistical testing)
-    base_model = LogisticRegression(penalty=None)
+    # 1. Fit Base Model (C=1e10 approximates no regularization, needed for
+    #    accurate statistical testing -- passing penalty=None explicitly
+    #    is deprecated in newer scikit-learn, so C alone controls this)
+    base_model = LogisticRegression(C=1e10, max_iter=1000)
     base_model.fit(X_base, y)
     
     # Calculate Log-Likelihood for base model
@@ -182,7 +184,7 @@ def test_confounding_with_age(data: pd.DataFrame) -> pd.DataFrame:
         # We must use pd.get_dummies to convert text classes into binary numbers
         X_full = pd.get_dummies(data[["age", col]], columns=[col], drop_first=True)
         
-        full_model = LogisticRegression(penalty=None, max_iter=1000)
+        full_model = LogisticRegression(C=1e10, max_iter=1000)
         full_model.fit(X_full, y)
         
         # Calculate Log-Likelihood for full model

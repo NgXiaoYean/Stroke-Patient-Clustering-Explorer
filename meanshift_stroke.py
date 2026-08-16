@@ -23,13 +23,20 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from sklearn.cluster import MeanShift, estimate_bandwidth
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
 from sklearn.metrics import davies_bouldin_score, silhouette_score
+from sklearn.preprocessing import StandardScaler
 
 from data_processing import (
+    build_preprocessor,
     clean_data,
     preprocess_data,
     apply_pca,
     calculate_cluster_summary,
+    NUMERIC_COLUMNS,
+    BINARY_COLUMNS,
+    CATEGORICAL_COLUMNS,
 )
 from evaluation import ClusteringResult
 
@@ -37,11 +44,20 @@ RANDOM_STATE = 42
 
 MeanShiftResult = ClusteringResult
 
+RAW_INPUT_COLUMNS = NUMERIC_COLUMNS + BINARY_COLUMNS + CATEGORICAL_COLUMNS
+
+
+@dataclass
+class PredictionArtifacts:
+    preprocessor: ColumnTransformer
+    pca_selected: PCA
+    pca_scaler: StandardScaler
+    model: MeanShift
+    cluster_summary: pd.DataFrame
+
 
 @dataclass(frozen=True)
 class MeanShiftConfig:
-    """Tunable knobs exposed to the Streamlit sidebar."""
-
     bandwidth: Optional[float] = None
     quantile: float = 0.25
     pca_variance: float = 0.90
@@ -53,7 +69,6 @@ class MeanShiftConfig:
 def _metrics(
     features: np.ndarray, labels: np.ndarray
 ) -> tuple[int, float, float, float]:
-    """Compute cluster count, noise ratio and quality scores."""
     non_noise = labels != -1
     clusters = len(set(labels[non_noise]))
     noise = float(np.mean(~non_noise))
@@ -80,7 +95,7 @@ def bandwidth_sweep(
     """Evaluate a range of bandwidth values around the automatic estimate."""
     base_bw = _auto_bandwidth(features, config.quantile)
     candidates = np.unique(
-        np.round(base_bw * np.linspace(0.50, 1.80, 14), 4)
+        np.round(base_bw * np.linspace(0.30, 1.80, 16), 4)
     )
     rows = []
     for bw in candidates:
@@ -121,11 +136,16 @@ def _select_bandwidth(sweep: pd.DataFrame, suggested_bw: float) -> float:
     )
 
 
-def run_meanshift(
+def run_meanshift_with_artifacts(
     data: pd.DataFrame,
     config: MeanShiftConfig = MeanShiftConfig(),
-) -> MeanShiftResult:
-    """Full MeanShift pipeline: clean -> preprocess -> PCA -> cluster -> evaluate."""
+) -> tuple[MeanShiftResult, PredictionArtifacts]:
+    """Full MeanShift pipeline that also returns fitted prediction artifacts.
+
+    The artifacts contain fitted copies of the preprocessor, PCA, scaler,
+    and MeanShift model so that new patients can be scored via
+    ``predict_new_patient()`` without re-fitting anything.
+    """
     if not 0 < config.pca_variance <= 1:
         raise ValueError("pca_variance must be between 0 and 1.")
 
@@ -157,7 +177,20 @@ def run_meanshift(
     result_data["cluster"] = labels
     cluster_summary = calculate_cluster_summary(result_data, config.risk_multiplier)
 
-    return MeanShiftResult(
+    # ── Fit dedicated copies for prediction artifacts ────────────────────
+    artifact_preprocessor = build_preprocessor().fit(cleaned[RAW_INPUT_COLUMNS])
+    artifact_processed = artifact_preprocessor.transform(cleaned[RAW_INPUT_COLUMNS])
+    if hasattr(artifact_processed, "toarray"):
+        artifact_processed = artifact_processed.toarray()
+
+    artifact_pca = PCA(
+        n_components=config.pca_variance, svd_solver="full", random_state=RANDOM_STATE
+    ).fit(artifact_processed)
+    artifact_pca_features = artifact_pca.transform(artifact_processed)
+
+    artifact_scaler = StandardScaler().fit(artifact_pca_features)
+
+    result = MeanShiftResult(
         data=result_data,
         features=features,
         projection_2d=projection_2d,
@@ -176,6 +209,72 @@ def run_meanshift(
         selected_eps=selected_bw,
         parameter_results=sweep,
     )
+
+    artifacts = PredictionArtifacts(
+        preprocessor=artifact_preprocessor,
+        pca_selected=artifact_pca,
+        pca_scaler=artifact_scaler,
+        model=ms,
+        cluster_summary=cluster_summary,
+    )
+
+    return result, artifacts
+
+
+def run_meanshift(
+    data: pd.DataFrame,
+    config: MeanShiftConfig = MeanShiftConfig(),
+) -> MeanShiftResult:
+    """Full MeanShift pipeline: clean -> preprocess -> PCA -> cluster -> evaluate."""
+    result, _artifacts = run_meanshift_with_artifacts(data, config)
+    return result
+
+
+def predict_new_patient(
+    raw_patient: dict,
+    artifacts: PredictionArtifacts,
+) -> dict:
+    missing = sorted(set(RAW_INPUT_COLUMNS) - set(raw_patient.keys()))
+    if missing:
+        raise ValueError(f"Missing required input columns: {', '.join(missing)}")
+
+    patient_df = pd.DataFrame([{col: raw_patient[col] for col in RAW_INPUT_COLUMNS}])
+
+    processed = artifacts.preprocessor.transform(patient_df)
+    if hasattr(processed, "toarray"):
+        processed = processed.toarray()
+    pca_features = artifacts.pca_selected.transform(processed)
+    scaled_features = artifacts.pca_scaler.transform(pca_features)
+
+    predicted_cluster = int(artifacts.model.predict(scaled_features)[0])
+
+    summary = artifacts.cluster_summary
+    row = summary[summary["cluster"] == predicted_cluster]
+
+    if row.empty:
+        return {
+            "predicted_cluster": predicted_cluster,
+            "matched_profile": "Unknown",
+            "cluster_patients": 0,
+            "cluster_stroke_rate_pct": 0.0,
+            "cluster_age_mean": 0.0,
+            "cluster_glucose_mean": 0.0,
+            "cluster_bmi_mean": 0.0,
+            "cluster_elevated_risk": False,
+        }
+
+    row = row.iloc[0]
+    elevated = bool(row["elevated_risk"])
+    return {
+        "predicted_cluster": predicted_cluster,
+        "matched_profile": "Elevated Risk" if elevated else "Typical Risk",
+        "cluster_patients": int(row["patients"]),
+        "cluster_stroke_rate_pct": float(row["stroke_rate_pct"]),
+        "cluster_age_mean": float(row["age_mean"]),
+        "cluster_glucose_mean": float(row["glucose_mean"]),
+        "cluster_bmi_mean": float(row["bmi_mean"]),
+        "cluster_elevated_risk": elevated,
+    }
 
 
 def main() -> None:

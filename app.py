@@ -12,9 +12,26 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from dbscan_stroke import DBSCANConfig, run_dbscan
-from meanshift_stroke import MeanShiftConfig, run_meanshift
-from kmeans_stroke import KMeansConfig, run_kmeans
+from dbscan_stroke import (
+    DBSCANConfig,
+    run_dbscan_with_artifacts,
+    predict_new_patient as predict_dbscan_patient,
+)
+from meanshift_stroke import (
+    MeanShiftConfig,
+    run_meanshift_with_artifacts,
+    predict_new_patient as predict_meanshift_patient,
+    RAW_INPUT_COLUMNS,
+)
+try:
+    from kmeans_stroke import (
+        KMeansConfig,
+        run_kmeans_with_artifacts,
+        predict_new_patient as predict_kmeans_patient,
+    )
+    KMEANS_AVAILABLE = True
+except ImportError:
+    KMEANS_AVAILABLE = False
 from data_processing import (
     load_dataset,
     get_clinical_summary,
@@ -61,9 +78,10 @@ def load_data(path: str) -> pd.DataFrame:
     return load_dataset(path)
 
 
-@st.cache_data(show_spinner="Running DBSCAN analysis...")
+@st.cache_resource(show_spinner="Running DBSCAN analysis...")
 def analyse_dbscan(data: pd.DataFrame, eps: float | None, min_samples: int, pca_variance: float, risk_multiplier: float):
-    return run_dbscan(data, DBSCANConfig(
+    """Returns (DBSCANResult, PredictionArtifacts) — cached as a resource because artifacts hold fitted sklearn objects."""
+    return run_dbscan_with_artifacts(data, DBSCANConfig(
         eps=eps,
         min_samples=min_samples,
         pca_variance=pca_variance,
@@ -71,7 +89,7 @@ def analyse_dbscan(data: pd.DataFrame, eps: float | None, min_samples: int, pca_
     ))
 
 
-@st.cache_data(show_spinner="Running MeanShift analysis...")
+@st.cache_resource(show_spinner="Running MeanShift analysis...")
 def analyse_meanshift(
     data: pd.DataFrame,
     bandwidth: float | None,
@@ -80,7 +98,7 @@ def analyse_meanshift(
     risk_multiplier: float,
     min_bin_freq: int,
 ):
-    return run_meanshift(data, MeanShiftConfig(
+    return run_meanshift_with_artifacts(data, MeanShiftConfig(
         bandwidth=bandwidth,
         quantile=quantile,
         pca_variance=pca_variance,
@@ -88,14 +106,16 @@ def analyse_meanshift(
         min_bin_freq=min_bin_freq,
     ))
 
-@st.cache_data(show_spinner="Running K-Means analysis...")
-def analyse_kmeans(data: pd.DataFrame, n_clusters: int | None, pca_variance: float, risk_multiplier: float, max_k: int):
-    return run_kmeans(data, KMeansConfig(
-        n_clusters=n_clusters,
-        pca_variance=pca_variance,
-        risk_multiplier=risk_multiplier,
-        max_k=max_k,
-    ))
+if KMEANS_AVAILABLE:
+    @st.cache_resource(show_spinner="Running K-Means analysis...")
+    def analyse_kmeans(data: pd.DataFrame, n_clusters: int | None, pca_variance: float, risk_multiplier: float, max_k: int):
+        """Returns (KMeansResult, PredictionArtifacts) — cached as a resource because artifacts hold fitted sklearn objects."""
+        return run_kmeans_with_artifacts(data, KMeansConfig(
+            n_clusters=n_clusters,
+            pca_variance=pca_variance,
+            risk_multiplier=risk_multiplier,
+            max_k=max_k,
+        ))
 
 def dbscan_controls() -> tuple[float | None, int, float, float]:
     st.sidebar.subheader("DBSCAN settings")
@@ -161,7 +181,7 @@ def kmeans_controls() -> tuple[int | None, float, float, int]:
     if not automatic_k:
         n_clusters = st.sidebar.slider("Number of clusters (K)", min_value=2, max_value=10, value=3, key="km_k")
     max_k = st.sidebar.slider(
-        "Maximum K to evaluate", min_value=3, max_value=15, value=10, key="km_max_k",
+        "Maximum K to evaluate", min_value=3, max_value=20, value=15, key="km_max_k",
         help="Automatic mode evaluates K=2 up to this value and selects the highest Silhouette score."
     )
     pca_variance = st.sidebar.slider(
@@ -532,6 +552,122 @@ def show_meanshift_clustering(result) -> None:
     st.subheader("Cluster Summary Table")
     _render_cluster_summary_table(result, "meanshift_patient_clusters.csv")
 
+
+def _render_patient_predict_form(form_key: str, predict_fn, subheader: str) -> None:
+    """Shared form helper used by all three algorithm predictor pages.
+
+    Renders the same patient-input widgets and result display for any
+    ``predict_fn(raw_patient: dict) -> dict`` that returns the standard
+    prediction dict shape (see meanshift_stroke.predict_new_patient for
+    the canonical return-dict definition).  Each call site must pass a
+    *unique* ``form_key`` because Streamlit requires unique form IDs.
+    """
+    st.subheader(f"🩺 {subheader}")
+    st.caption(
+        """This tool identifies which existing patient cluster a new patient most closely resembles based on clinical and lifestyle features. 
+        It is a **risk-group match** — not an individual stroke prediction — because the 
+        clustering was performed without using the stroke outcome label. 
+        Only the fields below are used by the clustering model (gender, work 
+        type, and residence type were statistically tested and found not to 
+        meaningfully separate patients — see the Data Preprocessing tab for 
+        the chi-square / likelihood-ratio results — so they are not asked here)."""
+    )
+
+    with st.form(form_key):
+        col1, col2 = st.columns(2)
+        with col1:
+            age = st.number_input("Age", min_value=0.0, max_value=120.0, value=50.0, step=1.0, key=f"{form_key}_age")
+            avg_glucose = st.number_input(
+                "Avg Glucose Level (mg/dL)", min_value=0.0, max_value=500.0, value=100.0, step=1.0, key=f"{form_key}_glucose"
+            )
+            bmi = st.number_input("BMI", min_value=0.0, max_value=100.0, value=25.0, step=0.1, key=f"{form_key}_bmi")
+        with col2:
+            hypertension = st.selectbox("Hypertension", ["No", "Yes"], key=f"{form_key}_hypertension")
+            heart_disease = st.selectbox("Heart Disease", ["No", "Yes"], key=f"{form_key}_heart_disease")
+            ever_married = st.selectbox("Ever Married", ["Yes", "No"], key=f"{form_key}_ever_married")
+            smoking = st.selectbox(
+                "Smoking Status",
+                ["never smoked", "formerly smoked", "smokes", "Unknown"],
+                key=f"{form_key}_smoking",
+            )
+
+        submitted = st.form_submit_button("Predict Cluster", use_container_width=True)
+
+    if submitted:
+        raw_patient = {
+            "age": age,
+            "avg_glucose_level": avg_glucose,
+            "bmi": bmi,
+            "hypertension": 1 if hypertension == "Yes" else 0,
+            "heart_disease": 1 if heart_disease == "Yes" else 0,
+            "ever_married": ever_married,
+            "smoking_status": smoking,
+        }
+
+        pred = predict_fn(raw_patient)
+
+        if pred["cluster_elevated_risk"]:
+            risk_icon = "🔴"
+            st.warning(
+                f"{risk_icon}  **Assigned to Cluster {pred['predicted_cluster']}** — "
+                f"{pred['matched_profile']}"
+            )
+        elif pred["predicted_cluster"] == -1:
+            risk_icon = "⚠️"
+            st.warning(
+                f"{risk_icon}  **Cluster: Noise / No Match** — "
+                f"{pred['matched_profile']}"
+            )
+        else:
+            risk_icon = "🟢"
+            st.success(
+                f"{risk_icon}  **Assigned to Cluster {pred['predicted_cluster']}** — "
+                f"{pred['matched_profile']}"
+            )
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Cluster Stroke Rate", f"{pred['cluster_stroke_rate_pct']:.2f}%")
+        m2.metric("Cluster Mean Age", f"{pred['cluster_age_mean']:.1f}")
+        m3.metric("Cluster Mean Glucose", f"{pred['cluster_glucose_mean']:.1f}")
+        m4.metric("Cluster Mean BMI", f"{pred['cluster_bmi_mean']:.1f}")
+
+        st.caption(
+            f"This cluster contains {pred['cluster_patients']} patients from the "
+            f"training data. The stroke rate shown is the historical prevalence "
+            f"within this group — it does not predict this patient's individual outcome."
+        )
+
+
+def show_meanshift_predictor(artifacts) -> None:
+    """Render a form to predict which MeanShift cluster a new patient resembles."""
+    _render_patient_predict_form(
+        form_key="meanshift_predict_form",
+        predict_fn=lambda raw: predict_meanshift_patient(raw, artifacts),
+        subheader="Predict New Patient's Risk Group (MeanShift)",
+    )
+
+
+def show_dbscan_predictor(artifacts) -> None:
+    """Render a form to predict which DBSCAN cluster a new patient resembles.
+
+    Uses nearest-neighbour lookup in the transformed feature space (DBSCAN has
+    no centroids, so there is no distance-to-centroid to minimise).
+    """
+    _render_patient_predict_form(
+        form_key="dbscan_predict_form",
+        predict_fn=lambda raw: predict_dbscan_patient(raw, artifacts),
+        subheader="Predict New Patient's Risk Group (DBSCAN)",
+    )
+
+
+def show_kmeans_predictor(artifacts) -> None:
+    """Render a form to predict which K-Means cluster a new patient resembles."""
+    _render_patient_predict_form(
+        form_key="kmeans_predict_form",
+        predict_fn=lambda raw: predict_kmeans_patient(raw, artifacts),
+        subheader="Predict New Patient's Risk Group (K-Means)",
+    )
+
 def show_kmeans_clustering(result) -> None:
     st.header("🎯 K-Means Clustering")
 
@@ -836,26 +972,29 @@ def main() -> None:
         st.session_state["cache_cleaned"] = True
 
     st.sidebar.title("Controls")
-    selected = st.sidebar.selectbox("Algorithm", ["DBSCAN", "MeanShift", "K-Means"])
+    _algo_options = ["DBSCAN", "MeanShift"] + (["K-Means"] if KMEANS_AVAILABLE else [])
+    selected = st.sidebar.selectbox("Algorithm", _algo_options)
     data = load_data(str(DATA_PATH))
 
     inject_custom_css()
 
     # ── Sidebar controls & run the selected algorithm ─────────────────────
+    meanshift_artifacts = None
+    dbscan_artifacts = None
+    kmeans_artifacts = None
     if selected == "DBSCAN":
         eps, min_samples, pca_variance, risk_multiplier = dbscan_controls()
-        result = analyse_dbscan(data, eps, min_samples, pca_variance, risk_multiplier)
+        result, dbscan_artifacts = analyse_dbscan(data, eps, min_samples, pca_variance, risk_multiplier)
     elif selected == "MeanShift":
         bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq = meanshift_controls()
-        result = analyse_meanshift(data, bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq)
-    else:
+        result, meanshift_artifacts = analyse_meanshift(data, bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq)
+    elif selected == "K-Means" and KMEANS_AVAILABLE:
         n_clusters, pca_variance, risk_multiplier, max_k = kmeans_controls()
-        result = analyse_kmeans(data, n_clusters, pca_variance, risk_multiplier, max_k)
-
-        # K-Means placeholder – keeps shared tabs working with DBSCAN result
-        #st.sidebar.subheader("PCA settings")
-        #pca_variance = st.sidebar.slider("PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05)
-        #result = analyse_dbscan(data, None, 12, pca_variance, 1.5)
+        result, kmeans_artifacts = analyse_kmeans(data, n_clusters, pca_variance, risk_multiplier, max_k)
+    else:
+        # Defensive fallback — should not be reached with the guarded dropdown
+        pca_variance = 0.90
+        result, dbscan_artifacts = analyse_dbscan(data, None, 12, pca_variance, 1.5)
 
     tab_clustering, tab_comparison, tab_eda, tab_preprocessing = st.tabs([
         "🔍 Clustering Dashboard", 
@@ -879,33 +1018,98 @@ def main() -> None:
                     st.write("##### Cluster Mean Deviation from Baseline (%)")
                     st.dataframe(cluster_deviations, use_container_width=True)
 
+            st.divider()
+            show_dbscan_predictor(dbscan_artifacts)
+
         elif selected == "MeanShift":
             show_meanshift_clustering(result)
+            st.divider()
+            show_meanshift_predictor(meanshift_artifacts)
 
         else:
             show_kmeans_clustering(result)
+            if KMEANS_AVAILABLE and kmeans_artifacts is not None:
+                st.divider()
+                show_kmeans_predictor(kmeans_artifacts)
 
 
     with tab_comparison:
         st.header("⚔️ Clustering Algorithm Comparison")
-        st.markdown("Compare performance indices and clinical outcomes across medical patient clustering algorithms:")
+        st.markdown(
+            "Compare performance indices and clinical outcomes across medical patient clustering algorithms. "
+            "Higher Silhouette Score and lower Davies-Bouldin Index indicate better-separated clusters. "
+            "'Max Cluster Stroke Rate' shows the highest stroke prevalence found in any single cluster for that algorithm, compared to the dataset's overall baseline rate."
+        )
 
-        # Build results dict with every algorithm that has been run
-        results_dict = {selected: result}
+        # ── Run every implemented algorithm at fixed auto-tuned defaults ──────
+        # These calls reuse the same @st.cache_data/@st.cache_resource caches used
+        # by the sidebar-driven dashboard, so they add no extra computation when
+        # the user has already viewed those algorithms.
+        results_dict: dict = {}
+        _dbscan_result, _ = analyse_dbscan(data, None, 12, 0.90, 1.5)
+        results_dict["DBSCAN"] = _dbscan_result
+        _ms_result, _ = analyse_meanshift(data, None, 0.25, 0.90, 1.5, 5)
+        results_dict["MeanShift"] = _ms_result
+        if KMEANS_AVAILABLE:
+            _km_result, _ = analyse_kmeans(data, None, 0.90, 1.5, 15)
+            results_dict["K-Means"] = _km_result
 
         comp_df = generate_algorithm_comparison(results_dict)
         algorithm_names = comp_df["Algorithm"].tolist()
 
         comp_transposed = comp_df.astype(str).set_index("Algorithm").T.reset_index()
         comp_transposed.columns = ["Comparison Metric"] + algorithm_names
-        
+
         st.dataframe(comp_transposed, use_container_width=True, hide_index=True)
 
-        st.info("""
-            📝 **Teammate Integration Guide**:
-            * To compare K-Means or MeanShift runs, instantiate their results via your teammate's adapters (using the same `ClusteringResult` interface) and append them to the `results_dict` inside `app.py`.
-            * The comparison table will automatically calculate and display the new models' clusters count, noise rates, silhouette ratios, and maximum group stroke rates side-by-side.
-        """)
+        # ── Grouped bar chart: Silhouette vs Davies-Bouldin ───────────────────
+        import plotly.graph_objects as go
+
+        _chart_algos, _chart_sil, _chart_db = [], [], []
+        for _algo, _res in results_dict.items():
+            if np.isfinite(_res.silhouette) and np.isfinite(_res.davies_bouldin):
+                _chart_algos.append(_algo)
+                _chart_sil.append(round(_res.silhouette, 4))
+                _chart_db.append(round(_res.davies_bouldin, 4))
+
+        if _chart_algos:
+            st.subheader("Silhouette Score vs Davies-Bouldin Index")
+            _fig_cmp = go.Figure()
+            _fig_cmp.add_trace(go.Bar(
+                name="Silhouette Score (↑ better)",
+                x=_chart_algos,
+                y=_chart_sil,
+                marker_color="#1e3c72",
+                text=[f"{v:.4f}" for v in _chart_sil],
+                textposition="outside",
+            ))
+            _fig_cmp.add_trace(go.Bar(
+                name="Davies-Bouldin Index (↓ better)",
+                x=_chart_algos,
+                y=_chart_db,
+                marker_color="#e74c3c",
+                text=[f"{v:.4f}" for v in _chart_db],
+                textposition="outside",
+            ))
+            _fig_cmp.update_layout(
+                barmode="group",
+                xaxis_title="Algorithm",
+                yaxis_title="Score",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                margin=dict(t=60, b=40),
+                font=dict(family="Outfit, sans-serif"),
+            )
+            _fig_cmp.update_xaxes(showgrid=False)
+            _fig_cmp.update_yaxes(gridcolor="#e2e8f0")
+            st.plotly_chart(_fig_cmp, use_container_width=True)
+
+        if not KMEANS_AVAILABLE:
+            st.info(
+                "K-Means results will appear here once your teammate's "
+                "kmeans_stroke.py is available."
+            )
             
     with tab_eda:
         show_eda(data)
