@@ -122,11 +122,10 @@ def dbscan_controls() -> tuple[float | None, int, float, float]:
     automatic_eps = st.sidebar.checkbox("Choose EPS automatically", value=False)
     eps = None
     if not automatic_eps:
-        # Change the default value to 0.66 (or 0.658 if you change the format to "%.3f")
-        eps = st.sidebar.number_input("EPS", min_value=0.01, value=0.66, step=0.05, format="%.2f")
+        eps = st.sidebar.number_input("EPS", min_value=0.01, value=0.76, step=0.05, format="%.2f")
     
     # Ensure min_samples defaults to 20
-    min_samples = st.sidebar.slider("min_samples", min_value=3, max_value=40, value=20)
+    min_samples = st.sidebar.slider("min_samples", min_value=3, max_value=40, value=30)
     
     # Ensure PCA defaults to 0.90
     pca_variance = st.sidebar.slider("PCA variance retained", min_value=0.60, max_value=1.00, value=0.90, step=0.05)
@@ -553,6 +552,58 @@ def show_meanshift_clustering(result) -> None:
     _render_cluster_summary_table(result, "meanshift_patient_clusters.csv")
 
 
+def _explain_patient_factors(raw_patient: dict, baseline: dict) -> list[str]:
+    """Turn a patient's raw inputs into plain-language reasons, compared to
+    the dataset average, so a non-technical user can see *why* they were
+    matched to a given risk group — not just the group's stats."""
+    reasons: list[tuple[float, str]] = []  # (magnitude, sentence) for sorting
+
+    def _pct_diff(value: float, base: float) -> float:
+        return (value - base) / base if base else 0.0
+
+    age_diff = _pct_diff(raw_patient["age"], baseline["age"])
+    if abs(age_diff) >= 0.15:
+        direction = "older" if age_diff > 0 else "younger"
+        reasons.append((abs(age_diff), (
+            f"**Age** — {raw_patient['age']:.0f} years, noticeably {direction} than "
+            f"the average patient ({baseline['age']:.0f})."
+        )))
+
+    glu_diff = _pct_diff(raw_patient["avg_glucose_level"], baseline["avg_glucose_level"])
+    if abs(glu_diff) >= 0.15:
+        direction = "higher" if glu_diff > 0 else "lower"
+        reasons.append((abs(glu_diff), (
+            f"**Average glucose level** — {raw_patient['avg_glucose_level']:.0f} mg/dL, "
+            f"{direction} than the average patient ({baseline['avg_glucose_level']:.0f} mg/dL)."
+        )))
+
+    bmi_diff = _pct_diff(raw_patient["bmi"], baseline["bmi"])
+    if abs(bmi_diff) >= 0.15:
+        direction = "higher" if bmi_diff > 0 else "lower"
+        reasons.append((abs(bmi_diff), (
+            f"**BMI** — {raw_patient['bmi']:.1f}, {direction} than the average patient "
+            f"({baseline['bmi']:.1f})."
+        )))
+
+    if raw_patient["hypertension"] == 1:
+        reasons.append((0.5, (
+            f"**Hypertension** — present. Only about {baseline['hypertension_rate']:.0f}% "
+            f"of patients in the dataset have hypertension."
+        )))
+
+    if raw_patient["heart_disease"] == 1:
+        reasons.append((0.5, (
+            f"**Heart disease** — present. Only about {baseline['heart_disease_rate']:.0f}% "
+            f"of patients in the dataset have heart disease."
+        )))
+
+    if raw_patient.get("smoking_status") == "smokes":
+        reasons.append((0.3, "**Smoking status** — currently smokes."))
+
+    reasons.sort(key=lambda r: r[0], reverse=True)
+    return [sentence for _, sentence in reasons[:4]]
+
+
 def _render_patient_predict_form(form_key: str, predict_fn, subheader: str) -> None:
     """Shared form helper used by all three algorithm predictor pages.
 
@@ -563,15 +614,7 @@ def _render_patient_predict_form(form_key: str, predict_fn, subheader: str) -> N
     *unique* ``form_key`` because Streamlit requires unique form IDs.
     """
     st.subheader(f"🩺 {subheader}")
-    st.caption(
-        """This tool identifies which existing patient cluster a new patient most closely resembles based on clinical and lifestyle features. 
-        It is a **risk-group match** — not an individual stroke prediction — because the 
-        clustering was performed without using the stroke outcome label. 
-        Only the fields below are used by the clustering model (gender, work 
-        type, and residence type were statistically tested and found not to 
-        meaningfully separate patients — see the Data Preprocessing tab for 
-        the chi-square / likelihood-ratio results — so they are not asked here)."""
-    )
+    st.caption("Enter patient details to see which risk group they match.")
 
     with st.form(form_key):
         col1, col2 = st.columns(2)
@@ -605,37 +648,37 @@ def _render_patient_predict_form(form_key: str, predict_fn, subheader: str) -> N
         }
 
         pred = predict_fn(raw_patient)
+        baseline_rate = st.session_state.get("_baseline_stroke_rate_pct")
+        baseline_stats = st.session_state.get("_baseline_stats")
+
+        if pred["predicted_cluster"] == -1:
+            st.warning("⚠️ No clear match found for this combination of inputs.")
+            return
 
         if pred["cluster_elevated_risk"]:
-            risk_icon = "🔴"
-            st.warning(
-                f"{risk_icon}  **Assigned to Cluster {pred['predicted_cluster']}** — "
-                f"{pred['matched_profile']}"
-            )
-        elif pred["predicted_cluster"] == -1:
-            risk_icon = "⚠️"
-            st.warning(
-                f"{risk_icon}  **Cluster: Noise / No Match** — "
-                f"{pred['matched_profile']}"
-            )
+            icon, label, color = "🔴", "Higher Risk", "#C0392B"
         else:
-            risk_icon = "🟢"
-            st.success(
-                f"{risk_icon}  **Assigned to Cluster {pred['predicted_cluster']}** — "
-                f"{pred['matched_profile']}"
-            )
+            icon, label, color = "🟢", "Typical Risk", "#1E8449"
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Cluster Stroke Rate", f"{pred['cluster_stroke_rate_pct']:.2f}%")
-        m2.metric("Cluster Mean Age", f"{pred['cluster_age_mean']:.1f}")
-        m3.metric("Cluster Mean Glucose", f"{pred['cluster_glucose_mean']:.1f}")
-        m4.metric("Cluster Mean BMI", f"{pred['cluster_bmi_mean']:.1f}")
+        times_avg = pred['cluster_stroke_rate_pct'] / baseline_rate if baseline_rate else None
+        reasons = _explain_patient_factors(raw_patient, baseline_stats) if baseline_stats else []
 
-        st.caption(
-            f"This cluster contains {pred['cluster_patients']} patients from the "
-            f"training data. The stroke rate shown is the historical prevalence "
-            f"within this group — it does not predict this patient's individual outcome."
-        )
+        reasons_html = "".join(f"<li>{r}</li>" for r in reasons) or "<li>No single factor stands out — it's the overall combination.</li>"
+
+        st.markdown(f"""
+        <div style="background:#fff; border:1px solid #e2e8f0; border-left:6px solid {color};
+                    border-radius:10px; padding:18px 22px; margin:10px 0 16px 0;">
+            <div style="font-size:1.3rem; font-weight:700; color:{color};">{icon} {label}</div>
+            <div style="font-size:1.0rem; color:#334155; margin-top:4px;">
+                Stroke rate in this group: <b>{pred['cluster_stroke_rate_pct']:.1f}%</b>
+                {f"(dataset average: {baseline_rate:.1f}%, ~{times_avg:.1f}x)" if times_avg else ""}
+            </div>
+            <div style="font-size:0.95rem; font-weight:600; color:#334155; margin-top:14px;">Why:</div>
+            <ul style="margin:6px 0 0 0; padding-left:20px; color:#334155;">
+                {reasons_html}
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 def show_meanshift_predictor(artifacts) -> None:
@@ -975,6 +1018,14 @@ def main() -> None:
     _algo_options = ["DBSCAN", "MeanShift"] + (["K-Means"] if KMEANS_AVAILABLE else [])
     selected = st.sidebar.selectbox("Algorithm", _algo_options)
     data = load_data(str(DATA_PATH))
+    st.session_state["_baseline_stroke_rate_pct"] = float(data["stroke"].mean() * 100)
+    st.session_state["_baseline_stats"] = {
+        "age": float(data["age"].mean()),
+        "avg_glucose_level": float(data["avg_glucose_level"].mean()),
+        "bmi": float(data["bmi"].mean()),
+        "hypertension_rate": float(data["hypertension"].mean() * 100),
+        "heart_disease_rate": float(data["heart_disease"].mean() * 100),
+    }
 
     inject_custom_css()
 
@@ -1041,12 +1092,8 @@ def main() -> None:
             "'Max Cluster Stroke Rate' shows the highest stroke prevalence found in any single cluster for that algorithm, compared to the dataset's overall baseline rate."
         )
 
-        # ── Run every implemented algorithm at fixed auto-tuned defaults ──────
-        # These calls reuse the same @st.cache_data/@st.cache_resource caches used
-        # by the sidebar-driven dashboard, so they add no extra computation when
-        # the user has already viewed those algorithms.
         results_dict: dict = {}
-        _dbscan_result, _ = analyse_dbscan(data, None, 12, 0.90, 1.5)
+        _dbscan_result, _ = analyse_dbscan(data, 0.76, 30, 0.90, 1.5)
         results_dict["DBSCAN"] = _dbscan_result
         _ms_result, _ = analyse_meanshift(data, None, 0.25, 0.90, 1.5, 5)
         results_dict["MeanShift"] = _ms_result
