@@ -46,7 +46,6 @@ def _encoder() -> OneHotEncoder:
 
 
 def build_preprocessor() -> ColumnTransformer:
-    # Create sklearn transformer for scaling and encoding
     return ColumnTransformer([
         ("numeric", Pipeline([("scale", RobustScaler())]), NUMERIC_COLUMNS),
         ("binary", "passthrough", BINARY_COLUMNS),
@@ -55,7 +54,6 @@ def build_preprocessor() -> ColumnTransformer:
 
 
 def preprocess_data(data: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
-    # Clean data and transform variables via scaling and encoding
     cleaned = clean_data(data)
     preprocessor = build_preprocessor()
     processed = preprocessor.fit_transform(cleaned.drop(columns=["stroke", "cluster"], errors="ignore"))
@@ -82,7 +80,6 @@ def preprocess_data(data: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
         if len(feature_names) != processed.shape[1]:
             feature_names = [f"Feature_{i}" for i in range(processed.shape[1])]
             
-    # Clean feature names for clean text output
     feature_names = [
         f.replace("numeric__", "").replace("binary__", "").replace("category__", "") 
         for f in feature_names
@@ -91,14 +88,6 @@ def preprocess_data(data: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
 
 
 def apply_pca(processed: np.ndarray, feature_names: list[str], pca_variance: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
-    """Fit selected and full PCA models on preprocessed features.
-    
-    Returns:
-        features: PC projections explaining target variance fraction.
-        projection_2d: 2-dimensional PC projection for PCA plots.
-        pca_full_variance_ratio: individual variance ratio of all components.
-        pca_selected_loadings: loading weights mapped to features.
-    """
     pca_selected = PCA(n_components=pca_variance, svd_solver="full", random_state=RANDOM_STATE)
     features = pca_selected.fit_transform(processed)
     features = StandardScaler().fit_transform(features)
@@ -120,9 +109,7 @@ def apply_pca(processed: np.ndarray, feature_names: list[str], pca_variance: flo
 
 
 def calculate_cluster_summary(data: pd.DataFrame, risk_multiplier: float) -> pd.DataFrame:
-    # calc stroke rates and metrics averages for each cluster group
     overall_rate = data["stroke"].mean()
-    # Filter noise patients (-1) for cluster grouping profiles
     summary_data = data[data["cluster"] != -1]
     if summary_data.empty:
         return pd.DataFrame()
@@ -137,8 +124,6 @@ def calculate_cluster_summary(data: pd.DataFrame, risk_multiplier: float) -> pd.
     return summary.round({"age_mean": 1, "glucose_mean": 1, "bmi_mean": 1})
 
 def test_categorical_association(data: pd.DataFrame) -> pd.DataFrame:
-    """Chi-square test of each raw categorical/demographic column against stroke,
-    used to justify which categorical features are retained for clustering."""
     candidates = ["gender", "Residence_type", "work_type", "ever_married", "smoking_status"]
     rows = []
     for col in candidates:
@@ -156,9 +141,6 @@ def test_categorical_association(data: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def test_confounding_with_age(data: pd.DataFrame) -> pd.DataFrame:
-    """Likelihood-ratio test using Scikit-Learn: does `categorical_col` predict 
-    stroke beyond age alone?
-    """
     candidates = ["gender", "Residence_type", "work_type", "ever_married", "smoking_status"]
     rows = []
     
@@ -166,31 +148,23 @@ def test_confounding_with_age(data: pd.DataFrame) -> pd.DataFrame:
     y = data["stroke"]
     X_base = data[["age"]]
     
-    # 1. Fit Base Model (C=1e10 approximates no regularization, needed for
-    #    accurate statistical testing -- passing penalty=None explicitly
-    #    is deprecated in newer scikit-learn, so C alone controls this)
     base_model = LogisticRegression(C=1e10, max_iter=1000)
     base_model.fit(X_base, y)
     
-    # Calculate Log-Likelihood for base model
-    # Math note: Log-Likelihood = -(Log Loss * Number of samples)
+    # Log-Likelihood = -(Log Loss * Number of samples)
     llf_base = -log_loss(y, base_model.predict_proba(X_base)) * len(y)
     
     for col in candidates:
         if col not in data.columns:
             continue
             
-        # 2. Fit Full Model (Age + Categorical Column)
-        # We must use pd.get_dummies to convert text classes into binary numbers
         X_full = pd.get_dummies(data[["age", col]], columns=[col], drop_first=True)
         
         full_model = LogisticRegression(C=1e10, max_iter=1000)
         full_model.fit(X_full, y)
         
-        # Calculate Log-Likelihood for full model
         llf_full = -log_loss(y, full_model.predict_proba(X_full)) * len(y)
         
-        # 3. Calculate Likelihood-Ratio Test
         lr_stat = 2 * (llf_full - llf_base)
         df_diff = X_full.shape[1] - X_base.shape[1]
         p_value = chi2_dist.sf(lr_stat, df_diff)
@@ -205,7 +179,6 @@ def test_confounding_with_age(data: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 def get_clinical_summary(data: pd.DataFrame) -> dict[str, float]:
-    # Calc summary data overview 
     total_pts = len(data)
     stroke_cases = int(data["stroke"].sum())
     stroke_rate = (stroke_cases / total_pts) * 100
@@ -221,7 +194,6 @@ def get_clinical_summary(data: pd.DataFrame) -> dict[str, float]:
 
 
 def get_categorical_analysis(data: pd.DataFrame, cat_feature: str) -> pd.DataFrame:
-    # Group by a categorical clinical column and count stroke prevalence
     grouped = data.groupby(cat_feature).agg(
         Total_Patients=("stroke", "size"),
         Stroke_Cases=("stroke", "sum")
@@ -235,7 +207,6 @@ def get_categorical_analysis(data: pd.DataFrame, cat_feature: str) -> pd.DataFra
 
 
 def get_correlation_matrix(data: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    # cacl pearson correlation coefficients 
     corr_cols = ["age", "avg_glucose_level", "bmi", "hypertension", "heart_disease", "stroke"]
     corr_matrix = data[corr_cols].corr()
     readable_labels = [c.replace('_', ' ').title() for c in corr_cols]
@@ -243,7 +214,6 @@ def get_correlation_matrix(data: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]
 
 
 def get_preprocessing_previews(result, data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # Generate original and output preview columns for the preprocessing tab
     raw_cols = ["age", "avg_glucose_level", "bmi", "hypertension", "heart_disease", "gender", "smoking_status"]
     raw_preview = data[raw_cols].head(6)
     
@@ -256,7 +226,6 @@ def get_preprocessing_previews(result, data: pd.DataFrame) -> tuple[pd.DataFrame
 
 
 def get_pca_scree_data(result) -> pd.DataFrame:
-    # Build explained variance coordinates for Scree scatter plots
     return pd.DataFrame({
         "Component": [f"PC{i+1}" for i in range(len(result.pca_full_variance_ratio))],
         "Individual Variance (%)": result.pca_full_variance_ratio * 100,
@@ -265,7 +234,6 @@ def get_pca_scree_data(result) -> pd.DataFrame:
 
 
 def get_pca_loadings(result, selected_pc: str) -> tuple[pd.DataFrame, list[str], list[str]]:
-    #Fetch PCA loading value and identify the most contribution feature 
     loadings = result.pca_selected_loadings[selected_pc].reset_index()
     loadings.columns = ["Feature", "Weight"]
     loadings_sorted = loadings.sort_values(by="Weight", key=abs, ascending=True)
@@ -284,7 +252,7 @@ def get_data_quality_report(data: pd.DataFrame) -> pd.DataFrame:
         total = len(data)
         null_pct = (null_count / total) * 100
         
-        # Outlier counts (approximated for numeric features using 1.5 * IQR rule)
+        # 1.5 * IQR 
         outlier_count = 0
         if pd.api.types.is_numeric_dtype(data[col]) and col not in ["stroke", "cluster"]:
             q1 = data[col].quantile(0.25)

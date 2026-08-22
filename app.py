@@ -1,10 +1,4 @@
-﻿"""Interactive Stroke Patient Clustering Explorer.
-
-Focuses solely on page configuration, user state selections, custom layout cards,
-and rendering visual modules. Business logic is placed in data_processing.py,
-evaluation/metrics structures are in evaluation.py, and plotting calculations 
-are in visualizations.py.
-"""
+﻿
 from __future__ import annotations
 
 from pathlib import Path
@@ -80,7 +74,6 @@ def load_data(path: str) -> pd.DataFrame:
 
 @st.cache_resource(show_spinner="Running DBSCAN analysis...")
 def analyse_dbscan(data: pd.DataFrame, eps: float | None, min_samples: int, pca_variance: float, risk_multiplier: float):
-    """Returns (DBSCANResult, PredictionArtifacts) — cached as a resource because artifacts hold fitted sklearn objects."""
     return run_dbscan_with_artifacts(data, DBSCANConfig(
         eps=eps,
         min_samples=min_samples,
@@ -109,7 +102,6 @@ def analyse_meanshift(
 if KMEANS_AVAILABLE:
     @st.cache_resource(show_spinner="Running K-Means analysis...")
     def analyse_kmeans(data: pd.DataFrame, n_clusters: int | None, pca_variance: float, risk_multiplier: float, max_k: int):
-        """Returns (KMeansResult, PredictionArtifacts) — cached as a resource because artifacts hold fitted sklearn objects."""
         return run_kmeans_with_artifacts(data, KMeansConfig(
             n_clusters=n_clusters,
             pca_variance=pca_variance,
@@ -134,14 +126,12 @@ def dbscan_controls() -> tuple[float | None, int, float, float]:
         st.markdown("""
 - **EPS** is the neighbourhood radius. Lower EPS makes tighter, smaller clusters and more noise. Higher EPS merges nearby groups; too high can create one large cluster.
 - **min_samples** is the number of neighbours required for a dense core. Higher values make DBSCAN stricter, usually increasing noise and removing tiny clusters.
-- Start with automatic EPS, inspect the k-distance graph, then test nearby manual values. Prefer a useful number of clusters, modest noise, and a higher silhouette score—not a particular cluster count.
 - **-1 means noise**, not a third medical class. It is okay to have more than two clusters: stroke 0/1 is an outcome used after clustering, while clusters describe different patient profiles.
         """)
     return eps, min_samples, pca_variance, risk_multiplier
 
 
 def meanshift_controls() -> tuple[float | None, float, float, float, int]:
-    """Render MeanShift sidebar controls and return selected parameter values."""
     st.sidebar.subheader("MeanShift settings")
     automatic_bw = st.sidebar.checkbox("Choose Bandwidth automatically", value=True, key="ms_auto_bw")
     bandwidth = None
@@ -424,11 +414,9 @@ def show_dbscan_clustering(result) -> None:
     transposed.columns = ["Attribute"] + [f"Cluster {int(c)}" for c in cluster_ids]
     
     st.dataframe(transposed, use_container_width=True, hide_index=True)
-    st.download_button("Download clustered patient data", result.data.to_csv(index=False).encode("utf-8"), "dbscan_patient_clusters.csv", "text/csv")
 
 
 def _render_cluster_summary_table(result, csv_filename: str) -> None:
-    """Shared helper: render a transposed cluster summary table + download button."""
     rates = result.cluster_summary.copy()
     rates["elevated_risk"] = rates["elevated_risk"].map({True: "Yes", False: "No"})
     rates["age_mean"] = rates["stroke_rate"]
@@ -449,11 +437,6 @@ def _render_cluster_summary_table(result, csv_filename: str) -> None:
     transposed.columns = ["Attribute"] + [f"Cluster {int(c)}" for c in cluster_ids]
 
     st.dataframe(transposed, use_container_width=True, hide_index=True)
-    st.download_button(
-        "Download clustered patient data",
-        result.data.to_csv(index=False).encode("utf-8"),
-        csv_filename, "text/csv"
-    )
 
 
 def show_meanshift_clustering(result) -> None:
@@ -553,9 +536,6 @@ def show_meanshift_clustering(result) -> None:
 
 
 def _explain_patient_factors(raw_patient: dict, baseline: dict) -> list[str]:
-    """Turn a patient's raw inputs into plain-language reasons, compared to
-    the dataset average, so a non-technical user can see *why* they were
-    matched to a given risk group — not just the group's stats."""
     reasons: list[tuple[float, str]] = []  # (magnitude, sentence) for sorting
 
     def _pct_diff(value: float, base: float) -> float:
@@ -605,14 +585,6 @@ def _explain_patient_factors(raw_patient: dict, baseline: dict) -> list[str]:
 
 
 def _render_patient_predict_form(form_key: str, predict_fn, subheader: str) -> None:
-    """Shared form helper used by all three algorithm predictor pages.
-
-    Renders the same patient-input widgets and result display for any
-    ``predict_fn(raw_patient: dict) -> dict`` that returns the standard
-    prediction dict shape (see meanshift_stroke.predict_new_patient for
-    the canonical return-dict definition).  Each call site must pass a
-    *unique* ``form_key`` because Streamlit requires unique form IDs.
-    """
     st.subheader(f"🩺 {subheader}")
     st.caption("Enter patient details to see which risk group they match.")
 
@@ -682,7 +654,6 @@ def _render_patient_predict_form(form_key: str, predict_fn, subheader: str) -> N
 
 
 def show_meanshift_predictor(artifacts) -> None:
-    """Render a form to predict which MeanShift cluster a new patient resembles."""
     _render_patient_predict_form(
         form_key="meanshift_predict_form",
         predict_fn=lambda raw: predict_meanshift_patient(raw, artifacts),
@@ -691,11 +662,6 @@ def show_meanshift_predictor(artifacts) -> None:
 
 
 def show_dbscan_predictor(artifacts) -> None:
-    """Render a form to predict which DBSCAN cluster a new patient resembles.
-
-    Uses nearest-neighbour lookup in the transformed feature space (DBSCAN has
-    no centroids, so there is no distance-to-centroid to minimise).
-    """
     _render_patient_predict_form(
         form_key="dbscan_predict_form",
         predict_fn=lambda raw: predict_dbscan_patient(raw, artifacts),
@@ -704,7 +670,6 @@ def show_dbscan_predictor(artifacts) -> None:
 
 
 def show_kmeans_predictor(artifacts) -> None:
-    """Render a form to predict which K-Means cluster a new patient resembles."""
     _render_patient_predict_form(
         form_key="kmeans_predict_form",
         predict_fn=lambda raw: predict_kmeans_patient(raw, artifacts),
@@ -713,7 +678,6 @@ def show_kmeans_predictor(artifacts) -> None:
 
 def show_kmeans_clustering(result) -> None:
     st.header("🎯 K-Means Clustering")
-
     clean_df = result.data[result.data["cluster"] != -1]
     stroke_rates = clean_df.groupby("cluster")["stroke"].mean()
     max_stroke_rate = stroke_rates.max() if not stroke_rates.empty else 0.0
@@ -870,12 +834,6 @@ def show_eda(data: pd.DataFrame) -> None:
     st.markdown("This test checks if a feature actually causes strokes, or if it is just a side-effect of getting older. If the feature does not add predictive value beyond age, it can safely be dropped from the clustering model.")
     lr_df = test_confounding_with_age(data)
     st.dataframe(lr_df, use_container_width=True, hide_index=True)
-    
-    st.info("""
-        💡 **Data Pipeline Execution Note**:
-        * **Robustness**: Any extreme outliers identified in **3.2.7** are treated during preprocessing using robust scaling techniques (`RobustScaler` median/IQR) rather than being dropped, which keeps all clinical cohorts intact.
-        * **Missing Values**: Imputed automatically to prevent clustering algorithm disruption.
-    """)
 
 
 def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> None:
@@ -1000,14 +958,6 @@ def show_preprocessing_pca(result, data: pd.DataFrame, pca_variance: float) -> N
     
     fig_loadings_heatmap = plot_pca_loadings_heatmap(result.pca_selected_loadings)
     st.plotly_chart(fig_loadings_heatmap, use_container_width=True)
-    
-    # Interpretations guideline text
-    st.info("""
-        💡 **Clinical PCA Dimension Interpretation Guideline**:
-        * **Diverging Colormap (Red-to-Blue)**: Blue cells indicate strong positive feature associations; Red cells indicate strong negative associations.
-        * **Eigenvector Loading Scores**: Values range from -1.0 to +1.0. A magnitude close to 1.0 (or cell values |x| > 0.4) indicates that the feature is a core driver of that specific Principal Component's direction (clinical subtype definition).
-    """)
-
 
 def main() -> None:
     if "cache_cleaned" not in st.session_state:
@@ -1086,11 +1036,6 @@ def main() -> None:
 
     with tab_comparison:
         st.header("⚔️ Clustering Algorithm Comparison")
-        st.markdown(
-            "Compare performance indices and clinical outcomes across medical patient clustering algorithms. "
-            "Higher Silhouette Score and lower Davies-Bouldin Index indicate better-separated clusters. "
-            "'Max Cluster Stroke Rate' shows the highest stroke prevalence found in any single cluster for that algorithm, compared to the dataset's overall baseline rate."
-        )
 
         results_dict: dict = {}
         _dbscan_result, _ = analyse_dbscan(data, 0.76, 30, 0.90, 1.5)

@@ -1,4 +1,3 @@
-# Shared files for Evaluation 
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,20 +23,19 @@ class ClusteringResult:
     preprocessed_feature_names: list[str]
     preprocessed_data: np.ndarray
     
-    # DBSCAN-specific configuration placeholders (K-Means/MeanShift may Ignore)
+    # DBSCAN
     suggested_eps: float | None = None
     selected_eps: float | None = None
     min_samples: int | None = None
     k_distances: np.ndarray | None = None
     parameter_results: pd.DataFrame | None = None
 
-    # K-Means-specific result fields
+    # K-Means
     selected_k: int | None = None
     inertia: float | None = None
 
 
 def calculate_clustering_metrics(features: np.ndarray, labels: np.ndarray) -> dict[str, float | int]:
-    # SIlhouette & Davies-Bouldin index 
     non_noise = labels != -1
     clusters = len(set(labels[non_noise]))
     noise = float(np.mean(~non_noise))
@@ -56,11 +54,9 @@ def calculate_clustering_metrics(features: np.ndarray, labels: np.ndarray) -> di
     }
 
 def generate_algorithm_comparison(results_dict: dict[str, ClusteringResult]) -> pd.DataFrame:
-    """Compiles internal metrics and stroke risk capture across all algorithms."""
     comparison_rows = []
     
     for model_name, res in results_dict.items():
-        # Exclude noise points (-1) when calculating clean cluster metrics
         clean_df = res.data[res.data["cluster"] != -1]
         stroke_rates = clean_df.groupby("cluster")["stroke"].mean()
         max_stroke_rate = stroke_rates.max() if not stroke_rates.empty else 0.0
@@ -78,15 +74,12 @@ def generate_algorithm_comparison(results_dict: dict[str, ClusteringResult]) -> 
 
 
 def calculate_feature_contributions(res: ClusteringResult) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Calculates attribute contribution via PCA loadings and cluster mean percentage deviations."""
-    # Method A: Overall feature weight through mean absolute PCA loadings
     pca_weights = res.pca_selected_loadings.abs().mean(axis=1).sort_values(ascending=False)
     pca_importance = pd.DataFrame({
         "Attribute": pca_weights.index,
         "Mean Absolute PCA Weight": pca_weights.values.round(4)
     })
     
-    # Method B: Relative deviation of cluster means from overall dataset population mean
     numeric_cols = ["age", "avg_glucose_level", "bmi"]
     global_means = res.data[numeric_cols].mean()
     cluster_means = res.data[res.data["cluster"] != -1].groupby("cluster")[numeric_cols].mean()
