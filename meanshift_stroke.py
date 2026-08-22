@@ -1,19 +1,3 @@
-"""MeanShift clustering module for Stroke Patient Clustering Explorer.
-
-MeanShift is a non-parametric, centroid-based algorithm that automatically
-discovers the number of clusters by locating high-density regions in the
-feature space. No cluster count needs to be specified upfront - the bandwidth
-(kernel radius) controls granularity instead.
-
-Pipeline
---------
-1. Preprocess & scale clinical features (via data_processing.py)
-2. Apply PCA for dimensionality reduction
-3. Estimate optimal bandwidth with ``estimate_bandwidth`` (quantile sweep)
-4. Fit MeanShift and assign cluster labels
-5. Compute Silhouette & Davies-Bouldin quality metrics
-6. Build cluster summary with stroke-risk profiling
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -83,7 +67,6 @@ def _metrics(
 
 
 def _auto_bandwidth(features: np.ndarray, quantile: float) -> float:
-    """Return sklearn's bandwidth estimate, clamped to a sensible range."""
     bw = estimate_bandwidth(features, quantile=quantile, random_state=RANDOM_STATE)
     return float(max(bw, 0.1))
 
@@ -92,7 +75,6 @@ def bandwidth_sweep(
     features: np.ndarray,
     config: MeanShiftConfig,
 ) -> pd.DataFrame:
-    """Evaluate a range of bandwidth values around the automatic estimate."""
     base_bw = _auto_bandwidth(features, config.quantile)
     candidates = np.unique(
         np.round(base_bw * np.linspace(0.30, 1.80, 16), 4)
@@ -121,7 +103,6 @@ def bandwidth_sweep(
 
 
 def _select_bandwidth(sweep: pd.DataFrame, suggested_bw: float) -> float:
-    """Pick the best bandwidth from the sweep table (highest silhouette)."""
     candidates = sweep[sweep["valid"]].copy()
     if candidates.empty:
         candidates = sweep.dropna(subset=["silhouette"]).copy()
@@ -140,12 +121,6 @@ def run_meanshift_with_artifacts(
     data: pd.DataFrame,
     config: MeanShiftConfig = MeanShiftConfig(),
 ) -> tuple[MeanShiftResult, PredictionArtifacts]:
-    """Full MeanShift pipeline that also returns fitted prediction artifacts.
-
-    The artifacts contain fitted copies of the preprocessor, PCA, scaler,
-    and MeanShift model so that new patients can be scored via
-    ``predict_new_patient()`` without re-fitting anything.
-    """
     if not 0 < config.pca_variance <= 1:
         raise ValueError("pca_variance must be between 0 and 1.")
 
@@ -177,7 +152,6 @@ def run_meanshift_with_artifacts(
     result_data["cluster"] = labels
     cluster_summary = calculate_cluster_summary(result_data, config.risk_multiplier)
 
-    # ── Fit dedicated copies for prediction artifacts ────────────────────
     artifact_preprocessor = build_preprocessor().fit(cleaned[RAW_INPUT_COLUMNS])
     artifact_processed = artifact_preprocessor.transform(cleaned[RAW_INPUT_COLUMNS])
     if hasattr(artifact_processed, "toarray"):
@@ -225,7 +199,6 @@ def run_meanshift(
     data: pd.DataFrame,
     config: MeanShiftConfig = MeanShiftConfig(),
 ) -> MeanShiftResult:
-    """Full MeanShift pipeline: clean -> preprocess -> PCA -> cluster -> evaluate."""
     result, _artifacts = run_meanshift_with_artifacts(data, config)
     return result
 

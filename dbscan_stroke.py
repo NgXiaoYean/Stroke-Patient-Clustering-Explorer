@@ -1,20 +1,3 @@
-"""DBSCAN clustering module for Stroke Patient Clustering Explorer.
-
-DBSCAN is a density-based algorithm that discovers clusters of arbitrary shape
-and marks low-density points as noise (label -1).  No cluster count needs to
-be specified — the neighbourhood radius (eps) and minimum core-point size
-(min_samples) control granularity instead.
-
-Pipeline
---------
-1. Preprocess & scale clinical features (via data_processing.py)
-2. Apply PCA for dimensionality reduction (with a downstream StandardScaler)
-3. Estimate optimal eps with k-distance diagnostics (90th-percentile heuristic)
-4. Sweep eps candidates and select by Silhouette score
-5. Fit DBSCAN and assign cluster labels (-1 = noise)
-6. Compute Silhouette & Davies-Bouldin quality metrics
-7. Build cluster summary with stroke-risk profiling
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -43,13 +26,11 @@ from data_processing import (
 
 RANDOM_STATE = 42
 
-# Columns accepted by predict_new_patient() — must match meanshift_stroke.py exactly.
 RAW_INPUT_COLUMNS = NUMERIC_COLUMNS + BINARY_COLUMNS + CATEGORICAL_COLUMNS
 
 
 @dataclass(frozen=True)
 class DBSCANConfig:
-    # Let Machine set the eps automatically
     eps: Optional[float] = None
     min_samples: Optional[int] = None
     pca_variance: float = 0.90
@@ -65,24 +46,6 @@ DBSCANResult = ClusteringResult
 
 @dataclass
 class PredictionArtifacts:
-    """Fitted pipeline objects needed to predict a new patient's cluster.
-
-    These are fitted once on the training data and only ever
-    ``.transform()``-ed / ``.kneighbors()``-ed (never re-fit) when scoring
-    new patients.
-
-    Notes
-    -----
-    ``pca_scaler`` is required because ``data_processing.apply_pca()``
-    applies a ``StandardScaler`` to PCA output before returning.  New
-    patients must go through the same transform order:
-    preprocessor → pca_selected → pca_scaler → nearest_neighbor_index.kneighbors()
-
-    ``nearest_neighbor_index`` is fitted on the same transformed feature
-    matrix that was used to fit the DBSCAN model, so that row indices in
-    kneighbors() results align with ``training_labels``.
-    """
-
     preprocessor: ColumnTransformer
     pca_selected: PCA
     pca_scaler: StandardScaler
@@ -110,7 +73,6 @@ def _metrics(features: np.ndarray, labels: np.ndarray) -> tuple[int, float, floa
 
 
 def k_distance_diagnostics(features: np.ndarray, min_samples: int) -> tuple[np.ndarray, float]:
-    """Use a robust 90th-percentile start point, not the outlier-tail jump."""
     if len(features) <= min_samples:
         raise ValueError("min_samples must be smaller than the number of patients.")
     distances, _ = NearestNeighbors(n_neighbors=min_samples).fit(features).kneighbors(features)
@@ -148,13 +110,6 @@ def run_dbscan_with_artifacts(
     data: pd.DataFrame,
     config: DBSCANConfig = DBSCANConfig(),
 ) -> tuple[DBSCANResult, PredictionArtifacts]:
-    """Full DBSCAN pipeline that also returns fitted prediction artifacts.
-
-    The artifacts contain fitted copies of the preprocessor, PCA, scaler,
-    and a NearestNeighbors index built on the same feature space used for
-    clustering, so that new patients can be scored via
-    ``predict_new_patient()`` without re-fitting anything.
-    """
     if not 0 < config.pca_variance <= 1:
         raise ValueError("pca_variance must be between 0 and 1.")
 
@@ -175,9 +130,6 @@ def run_dbscan_with_artifacts(
     result_data["cluster"] = labels
     cluster_summary = calculate_cluster_summary(result_data, config.risk_multiplier)
 
-    # ── Fit dedicated copies for prediction artifacts ─────────────────────────
-    # These are fitted on cleaned[RAW_INPUT_COLUMNS] only — never on the stroke label.
-    # Transform order must match apply_pca():  preprocessor → pca → StandardScaler.
     artifact_preprocessor = build_preprocessor().fit(cleaned[RAW_INPUT_COLUMNS])
     artifact_processed = artifact_preprocessor.transform(cleaned[RAW_INPUT_COLUMNS])
     if hasattr(artifact_processed, "toarray"):
@@ -190,8 +142,6 @@ def run_dbscan_with_artifacts(
 
     artifact_scaler = StandardScaler().fit(artifact_pca_features)
 
-    # Build a NearestNeighbors index on the SAME feature matrix used for DBSCAN,
-    # so that the row indices returned by kneighbors() align with `labels`.
     nn_index = NearestNeighbors(n_neighbors=1).fit(features)
 
     result = DBSCANResult(
@@ -229,7 +179,6 @@ def run_dbscan_with_artifacts(
 
 
 def run_dbscan(data: pd.DataFrame, config: DBSCANConfig = DBSCANConfig()) -> DBSCANResult:
-    """Fit DBSCAN; stroke is held out until clusters are interpreted."""
     result, _artifacts = run_dbscan_with_artifacts(data, config)
     return result
 
@@ -244,22 +193,18 @@ def predict_new_patient(
 
     patient_df = pd.DataFrame([{col: raw_patient[col] for col in RAW_INPUT_COLUMNS}])
 
-    # Transform through the same pipeline used during training (transform only).
     processed = artifacts.preprocessor.transform(patient_df)
     if hasattr(processed, "toarray"):
         processed = processed.toarray()
     pca_features = artifacts.pca_selected.transform(processed)
     scaled_features = artifacts.pca_scaler.transform(pca_features)
 
-    # Find the single nearest training point in the transformed feature space.
-    # kneighbors() returns (distances, indices); we want the index of the neighbour.
     _, neighbor_indices = artifacts.nearest_neighbor_index.kneighbors(
         scaled_features, n_neighbors=1
     )
     neighbor_idx = int(neighbor_indices[0, 0])
     predicted_cluster = int(artifacts.training_labels[neighbor_idx])
 
-    # DBSCAN labels noise as -1; handle gracefully without crashing.
     if predicted_cluster == -1:
         return {
             "predicted_cluster": -1,

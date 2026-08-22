@@ -8,7 +8,6 @@ from evaluation import ClusteringResult
 
 
 def plot_cluster_scatter(result: ClusteringResult) -> go.Figure:
-    """Project patient clusters onto the first 2 principal components."""
     frame = pd.DataFrame({
         "PC1": result.projection_2d[:, 0], 
         "PC2": result.projection_2d[:, 1], 
@@ -34,7 +33,6 @@ def plot_cluster_scatter(result: ClusteringResult) -> go.Figure:
 
 
 def plot_k_distance(result: ClusteringResult) -> go.Figure:
-    # Line graph - distance to the kth neighbor 
     if result.k_distances is None:
         raise ValueError("DBSCAN k_distances are required for this plot.")
         
@@ -64,9 +62,8 @@ def plot_k_distance(result: ClusteringResult) -> go.Figure:
     return figure
 
 
-# DBSCAN only 
+# DBSCAN
 def plot_eps_search(result: ClusteringResult) -> go.Figure:
-    # Analyze silhouette and noise metrics with eps param 
     if result.parameter_results is None:
         raise ValueError("DBSCAN parameter_results search table is required for this plot.")
         
@@ -105,7 +102,6 @@ def plot_eps_search(result: ClusteringResult) -> go.Figure:
 
 
 def plot_stroke_by_cluster(result: ClusteringResult) -> go.Figure:
-    # Bar chart -> compare stroke rate % vs cluster with overall dataset 
     overall_rate = result.data["stroke"].mean() * 100
     rates = result.cluster_summary.copy()
     rates["cluster_label"] = rates["cluster"].apply(lambda c: f"Cluster {c}")
@@ -136,7 +132,6 @@ def plot_stroke_by_cluster(result: ClusteringResult) -> go.Figure:
 
 
 def plot_continuous_distribution(data: pd.DataFrame, num_feature: str) -> go.Figure:
-    # Histogram -> compare data between stroke and non-stroke pateints 
     plot_df = data.copy()
     plot_df["Stroke Status"] = plot_df["stroke"].map({0: "Healthy / No Stroke", 1: "Stroke Patient"})
     
@@ -162,7 +157,6 @@ def plot_continuous_distribution(data: pd.DataFrame, num_feature: str) -> go.Fig
 
 
 def plot_categorical_prevalence(grouped: pd.DataFrame, cat_feature: str, overall_stroke_rate: float) -> go.Figure:
-    # Grouped bar chart -> categorical 
     fig_cat = px.bar(
         grouped,
         x=cat_feature,
@@ -214,7 +208,6 @@ def plot_correlation_heatmap(corr_matrix: pd.DataFrame, readable_labels: list[st
 
 
 def plot_pca_scree(var_df: pd.DataFrame, pca_variance: float, n_components: int) -> go.Figure:
-    # PCA Scree plot -> individual and cumulative explained variance ratios 
     fig_scree = go.Figure()
     fig_scree.add_trace(go.Bar(
         x=var_df["Component"],
@@ -269,7 +262,6 @@ def plot_pca_scree(var_df: pd.DataFrame, pca_variance: float, n_components: int)
 
 
 def plot_pca_loadings_bar(loadings: pd.DataFrame, selected_pc: str) -> go.Figure:
-    # Horizontal bar chart -> original variable weights on selected PC component 
     fig_loadings = px.bar(
         loadings,
         x="Weight",
@@ -304,14 +296,12 @@ def plot_pca_loadings_bar(loadings: pd.DataFrame, selected_pc: str) -> go.Figure
 
 
 def plot_target_distribution(data: pd.DataFrame) -> go.Figure:
-    """Bar/frequency chart showing target variable percentages above the bars with Healthy at left."""
     counts = data["stroke"].value_counts().reset_index()
     counts.columns = ["Status", "Count"]
     counts["Status"] = counts["Status"].map({0: "Healthy", 1: "Stroke Patient"})
     
     total = counts["Count"].sum()
     counts["Percentage"] = (counts["Count"] / total * 100).round(2)
-    # Combine count and percentage above the bar
     counts["Label"] = counts.apply(lambda row: f"{row['Count']:,} ({row['Percentage']:.2f}%)", axis=1)
     
     fig = px.bar(
@@ -337,7 +327,6 @@ def plot_target_distribution(data: pd.DataFrame) -> go.Figure:
 
 
 def plot_numerical_outliers(data: pd.DataFrame) -> go.Figure:
-    """Horizontal boxplot facets stacked vertically comparing continuous attributes for outlier inspection."""
     features = ["age", "avg_glucose_level", "bmi"]
     melted = data.melt(value_vars=features, var_name="Feature", value_name="Value")
     melted["Feature"] = melted["Feature"].map({
@@ -396,14 +385,12 @@ def plot_numerical_outliers(data: pd.DataFrame) -> go.Figure:
 
 
 def plot_numerical_distributions_grid(data: pd.DataFrame) -> go.Figure:
-    """Generate high-fidelity, interactive Plotly side-by-side histograms with smooth spline KDE line overlays."""
     from plotly.subplots import make_subplots
     import scipy.stats as stats
     
     features = ["age", "avg_glucose_level", "bmi"]
     titles = [f"<b>Distribution of {col}</b>" for col in features]
     
-    # Create subplots grid
     fig = make_subplots(
         rows=1, 
         cols=3, 
@@ -419,16 +406,13 @@ def plot_numerical_distributions_grid(data: pd.DataFrame) -> go.Figure:
         max_val = float(values.max())
         x_range = np.linspace(min_val, max_val, 200)
         
-        # Calculate KDE using scipy
         kde = stats.gaussian_kde(values)
         kde_y = kde(x_range)
         
-        # 24 bins for an elegant binned distribution representation
         nbins = 24
         bin_width = (max_val - min_val) / nbins
         kde_scaled_y = kde_y * len(values) * bin_width
         
-        # Add histogram trace
         fig.add_trace(
             go.Histogram(
                 x=values,
@@ -449,7 +433,6 @@ def plot_numerical_distributions_grid(data: pd.DataFrame) -> go.Figure:
             row=1, col=col_idx
         )
         
-        # Add smooth spline-curved KDE line
         fig.add_trace(
             go.Scatter(
                 x=x_range,
@@ -463,7 +446,6 @@ def plot_numerical_distributions_grid(data: pd.DataFrame) -> go.Figure:
             row=1, col=col_idx
         )
         
-        # Style subplot axes
         fig.update_xaxes(
             title_text=col, 
             row=1, col=col_idx, 
@@ -496,7 +478,6 @@ def plot_numerical_distributions_grid(data: pd.DataFrame) -> go.Figure:
 
 
 def plot_categorical_distributions_grid(data: pd.DataFrame) -> go.Figure:
-    """Generate high-fidelity interactive Plotly subplot grid of categorical distributions."""
     from plotly.subplots import make_subplots
     import plotly.graph_objects as go
     
@@ -511,7 +492,6 @@ def plot_categorical_distributions_grid(data: pd.DataFrame) -> go.Figure:
         vertical_spacing=0.12
     )
     
-    # Grid coordinates mapping (r, c)
     coords = [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1)]
     
     for idx, col in enumerate(features):
@@ -545,7 +525,6 @@ def plot_categorical_distributions_grid(data: pd.DataFrame) -> go.Figure:
             row=r, col=c
         )
         
-        # Style grid/axes with solid dark lines and black text
         fig.update_xaxes(
             title_text="Count", 
             row=r, col=c, 
@@ -561,7 +540,6 @@ def plot_categorical_distributions_grid(data: pd.DataFrame) -> go.Figure:
             tickfont=dict(color="#000000", family="sans-serif", size=10)
         )
         
-    # Style SUBPLOT Titles in black
     fig.for_each_annotation(lambda a: a.update(
         font=dict(size=12, family="sans-serif", color="#000000"),
         y=a.y + 0.02 # nudge titles slightly up
@@ -578,11 +556,9 @@ def plot_categorical_distributions_grid(data: pd.DataFrame) -> go.Figure:
 
 
 def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_cols: list[str], feature: str) -> go.Figure:
-    """Generate a side-by-side Plotly comparison of a feature before and after scaling."""
     from plotly.subplots import make_subplots
     import plotly.graph_objects as go
     
-    # Fetch raw and scaled series
     raw_series = raw_data[feature].dropna()
     
     prep_col = f"numeric__{feature}"
@@ -599,7 +575,6 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
         "bmi": "Body Mass Index (BMI)"
     }[feature]
     
-    # Create 1 row, 2 cols subplot
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=[
@@ -611,7 +586,6 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
 
     BINS = 40
     
-    # Left plot: Raw Distribution
     fig.add_trace(
         go.Histogram(
             x=raw_series,
@@ -624,7 +598,6 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
         row=1, col=1
     )
     
-    # Right plot: Scaled Distribution
     fig.add_trace(
         go.Histogram(
             x=scaled_series,
@@ -637,7 +610,6 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
         row=1, col=2
     )
     
-    # Style X & Y Axes in solid black
     fig.update_xaxes(
         title_text="Raw Value (Original Unit)", 
         row=1, col=1, 
@@ -682,7 +654,6 @@ def plot_scaling_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_
 
 
 def plot_encoding_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep_cols: list[str], feature: str) -> go.Figure:
-    """Generate an interactive binary-mapping heatmap showing how categorical categories convert to One-Hot bits."""
     # Take first 12 sample rows
     num_samples = 12
     raw_sample = raw_data[feature].head(num_samples).reset_index(drop=True)
@@ -722,7 +693,6 @@ def plot_encoding_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep
     
     fig.update_coloraxes(showscale=False)
     
-    # Annotate cell values directly
     for r_idx in range(z_matrix.shape[0]):
         for c_idx in range(z_matrix.shape[1]):
             val = int(z_matrix[r_idx, c_idx])
@@ -736,29 +706,27 @@ def plot_encoding_comparison(raw_data: pd.DataFrame, prep_data: np.ndarray, prep
             
     fig.update_xaxes(
         tickfont=dict(color="#000000", family="sans-serif", size=10),
-        side="top", # Put labels on top
-        tickangle=0 # Force horizontal alignment to eliminate weird diagonal anchors
+        side="top",
+        tickangle=0 
     )
     fig.update_yaxes(
         tickfont=dict(color="#000000", family="sans-serif", size=11)
     )
     
     fig.update_layout(
-        height=405, # Nudged layout height for stacked tick names
+        height=405, 
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=160, r=40, t=110, b=40), # Restored comfortable margin
+        margin=dict(l=160, r=40, t=110, b=40),
         font=dict(family="sans-serif", color="#000000")
     )
     return fig
 
 
 def plot_pca_loadings_heatmap(loadings_df: pd.DataFrame) -> go.Figure:
-    """Generate a combined heatmap of PCA feature weights for all components at once."""
     import plotly.graph_objects as go
     import plotly.express as px
     
-    # Format Y = Features, X = PCs
     cleaned_y_labels = [f"<b>{idx.replace('_', ' ').title()}</b>" for idx in loadings_df.index]
     cleaned_x_labels = [f"<b>{col}</b>" for col in loadings_df.columns]
     
@@ -768,7 +736,7 @@ def plot_pca_loadings_heatmap(loadings_df: pd.DataFrame) -> go.Figure:
         z_matrix,
         x=cleaned_x_labels,
         y=cleaned_y_labels,
-        color_continuous_scale="RdBu", # Cool Red-to-Blue diverging colormap prefix
+        color_continuous_scale="RdBu", 
         range_color=[-1.0, 1.0],
         aspect="auto",
         title="<b>PCA Feature Weight Heatmap (All Components Eigenvectors combined)</b>"
@@ -781,7 +749,6 @@ def plot_pca_loadings_heatmap(loadings_df: pd.DataFrame) -> go.Figure:
         tickfont=dict(color="#000000", size=10)
     ))
     
-    # Annotate cell numbers
     for r_idx in range(z_matrix.shape[0]):
         for c_idx in range(z_matrix.shape[1]):
             val = z_matrix[r_idx, c_idx]
@@ -814,7 +781,6 @@ def plot_pca_loadings_heatmap(loadings_df: pd.DataFrame) -> go.Figure:
 
 
 # --- MeanShift-specific visualisations ---
-
 def plot_bandwidth_sweep(result):
     import plotly.graph_objects as go
 

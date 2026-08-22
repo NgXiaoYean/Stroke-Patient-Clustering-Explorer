@@ -1,17 +1,3 @@
-"""K-Means clustering module for Stroke Patient Clustering Explorer.
-
-The stroke outcome is excluded from clustering and is used only afterwards
-for clinical interpretation of the discovered patient groups.
-
-Pipeline
---------
-1. Preprocess & scale clinical features (via data_processing.py)
-2. Apply PCA for dimensionality reduction (with a downstream StandardScaler)
-3. Search K=min_k..max_k and select the K with the highest Silhouette score
-4. Fit KMeans with the selected K
-5. Compute Silhouette & Davies-Bouldin quality metrics
-6. Build cluster summary with stroke-risk profiling
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,7 +27,6 @@ from evaluation import ClusteringResult
 RANDOM_STATE = 42
 KMeansResult = ClusteringResult
 
-# Columns accepted by predict_new_patient() — must match meanshift_stroke.py exactly.
 RAW_INPUT_COLUMNS = NUMERIC_COLUMNS + BINARY_COLUMNS + CATEGORICAL_COLUMNS
 
 
@@ -79,12 +64,6 @@ def run_kmeans_with_artifacts(
     data: pd.DataFrame,
     config: KMeansConfig = KMeansConfig(),
 ) -> tuple[KMeansResult, PredictionArtifacts]:
-    """Full K-Means pipeline that also returns fitted prediction artifacts.
-
-    The artifacts contain fitted copies of the preprocessor, PCA, scaler,
-    and the same KMeans model used for clustering, so that new patients can
-    be scored via ``predict_new_patient()`` without re-fitting anything.
-    """
     if not 0 < config.pca_variance <= 1:
         raise ValueError("pca_variance must be between 0 and 1.")
     if config.min_k < 2:
@@ -106,7 +85,6 @@ def run_kmeans_with_artifacts(
     search = pd.DataFrame(rows)
 
     if config.n_clusters is None:
-        # Maximise Silhouette; use Davies-Bouldin and smaller K as tie-breakers.
         selected_k = int(
             search.sort_values(
                 ["silhouette", "davies_bouldin", "k"],
@@ -127,9 +105,6 @@ def run_kmeans_with_artifacts(
     result_data["cluster"] = labels
     cluster_summary = calculate_cluster_summary(result_data, config.risk_multiplier)
 
-    # ── Fit dedicated copies for prediction artifacts ─────────────────────────
-    # These are fitted on cleaned[RAW_INPUT_COLUMNS] only — never on the stroke label.
-    # Transform order must match apply_pca():  preprocessor → pca → StandardScaler.
     artifact_preprocessor = build_preprocessor().fit(cleaned[RAW_INPUT_COLUMNS])
     artifact_processed = artifact_preprocessor.transform(cleaned[RAW_INPUT_COLUMNS])
     if hasattr(artifact_processed, "toarray"):
@@ -174,7 +149,6 @@ def run_kmeans_with_artifacts(
 
 
 def run_kmeans(data: pd.DataFrame, config: KMeansConfig = KMeansConfig()) -> KMeansResult:
-    """Fit K-Means on PCA-transformed patient features."""
     result, _artifacts = run_kmeans_with_artifacts(data, config)
     return result
 
