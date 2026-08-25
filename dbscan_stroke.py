@@ -31,8 +31,8 @@ RAW_INPUT_COLUMNS = NUMERIC_COLUMNS + BINARY_COLUMNS + CATEGORICAL_COLUMNS
 
 @dataclass(frozen=True)
 class DBSCANConfig:
-    eps: Optional[float] = None
-    min_samples: Optional[int] = None
+    eps: Optional[float] = 0.760
+    min_samples: Optional[int] = 30
     pca_variance: float = 0.90
     max_noise_ratio: float = 0.60
     max_clusters: int = 12
