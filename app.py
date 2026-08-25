@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -69,8 +70,44 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("stroke_clustering_app")
 
 DATA_PATH = Path(__file__).with_name("brain_stroke.csv")
+MODEL_DIR = Path(__file__).with_name("04_Trained_Model")
 
 st.set_page_config(page_title="Stroke Patient Clustering Explorer", page_icon="🧠", layout="wide")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Pre-trained model loading (produced by save_models.py)
+#
+# save_models.py trains each algorithm once, offline, using the exact
+# parameter values below, and saves the (result, artifacts) pair to
+# 04_Trained_Model/<name>.joblib. If the sidebar is left on these same
+# default values, we load that file instead of retraining. Any change to
+# a slider/checkbox — or a missing/corrupt file — falls back to normal
+# retraining automatically, so this is purely a speed optimisation and
+# never blocks the app from working.
+# ────────────────────────────────────────────────────────────────────────────
+
+DBSCAN_DEFAULT_PARAMS = (None, 30, 0.90, 1.5)              # eps, min_samples, pca_variance, risk_multiplier
+KMEANS_DEFAULT_PARAMS = (None, 0.90, 1.5, 15)              # n_clusters, pca_variance, risk_multiplier, max_k
+MEANSHIFT_DEFAULT_PARAMS = (None, 0.25, 0.90, 1.5, 5)      # bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq
+
+
+def _load_pretrained(name: str, current_params: tuple, default_params: tuple):
+    """Return a cached (result, artifacts) pair from 04_Trained_Model/ if the
+    caller is using the same default settings save_models.py was run with,
+    otherwise return None so the caller retrains as usual."""
+    if current_params != default_params:
+        return None
+    path = MODEL_DIR / f"{name}.joblib"
+    if not path.exists():
+        return None
+    try:
+        result, artifacts = joblib.load(path)
+        logger.info("Loaded pre-trained %s model from %s", name, path)
+        return result, artifacts
+    except Exception as exc:  # noqa: BLE001 - any load failure just means "retrain"
+        logger.warning("Could not load saved %s model (%s) — retraining instead.", name, exc)
+        return None
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -100,6 +137,11 @@ def load_data(path: str) -> pd.DataFrame:
 
 @st.cache_resource(show_spinner="Running DBSCAN analysis...")
 def analyse_dbscan(data: pd.DataFrame, eps: float | None, min_samples: int, pca_variance: float, risk_multiplier: float):
+    cached = _load_pretrained(
+        "dbscan_artifacts", (eps, min_samples, pca_variance, risk_multiplier), DBSCAN_DEFAULT_PARAMS
+    )
+    if cached is not None:
+        return cached
     return run_dbscan_with_artifacts(data, DBSCANConfig(
         eps=eps,
         min_samples=min_samples,
@@ -117,6 +159,12 @@ def analyse_meanshift(
     risk_multiplier: float,
     min_bin_freq: int,
 ):
+    cached = _load_pretrained(
+        "meanshift_artifacts", (bandwidth, quantile, pca_variance, risk_multiplier, min_bin_freq),
+        MEANSHIFT_DEFAULT_PARAMS,
+    )
+    if cached is not None:
+        return cached
     return run_meanshift_with_artifacts(data, MeanShiftConfig(
         bandwidth=bandwidth,
         quantile=quantile,
@@ -128,6 +176,11 @@ def analyse_meanshift(
 if KMEANS_AVAILABLE:
     @st.cache_resource(show_spinner="Running K-Means analysis...")
     def analyse_kmeans(data: pd.DataFrame, n_clusters: int | None, pca_variance: float, risk_multiplier: float, max_k: int):
+        cached = _load_pretrained(
+            "kmeans_artifacts", (n_clusters, pca_variance, risk_multiplier, max_k), KMEANS_DEFAULT_PARAMS
+        )
+        if cached is not None:
+            return cached
         return run_kmeans_with_artifacts(data, KMeansConfig(
             n_clusters=n_clusters,
             pca_variance=pca_variance,
